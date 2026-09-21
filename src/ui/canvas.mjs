@@ -3,7 +3,7 @@ import { cssTransform, gridMetrics, panBy, toWorld, zoomAt } from '../core/view.
 
 const ZOOM_SENSITIVITY = 0.0015
 
-export function mountCanvas({ getView, setView, subscribe, onBackgroundPress, onBackgroundDblClick }) {
+export function mountCanvas({ getView, setView, subscribe, onBackgroundPress, onBackgroundDblClick, onResetZoom }) {
   const viewport = document.getElementById('viewport')
   const world = document.getElementById('world')
   const grid = document.getElementById('grid')
@@ -75,9 +75,7 @@ export function mountCanvas({ getView, setView, subscribe, onBackgroundPress, on
     }
     if (event.ctrlKey && event.key === '0') {
       event.preventDefault()
-      const centerX = viewport.clientWidth / 2
-      const centerY = viewport.clientHeight / 2
-      setView(zoomAt(getView(), centerX, centerY, 1 / getView().scale))
+      onResetZoom()
     }
   })
 

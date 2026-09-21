@@ -21,6 +21,69 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* 工具条 */
+
+#toolbar {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 8px;
+  border: 1px solid #e4e4df;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 6%);
+  font-size: 12px;
+  user-select: none;
+}
+
+#toolbar button {
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#toolbar button:hover {
+  background: #f0f0ec;
+}
+
+#save-dot {
+  width: 7px;
+  height: 7px;
+  margin: 0 4px 0 2px;
+  border-radius: 50%;
+  background: #7fbf7f;
+}
+
+#save-dot.pending {
+  background: #e0a94a;
+}
+
+#zoom-value {
+  min-width: 38px;
+  color: #6b6b66;
+  text-align: right;
+}
+
+#toolbar-message:not(:empty) {
+  margin-left: 4px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: #fdeceb;
+  color: #c0483d;
+}
+
+#toolbar-message:empty {
+  display: none;
+}
+
 #viewport {
   position: fixed;
   inset: 0;
