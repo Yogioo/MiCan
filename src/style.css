@@ -60,3 +60,62 @@ body.space-ready #viewport {
   left: 0;
   overflow: visible;
 }
+
+/* 边层只负责画，命中测试交给边自己开（见 .edge-hit） */
+#edges {
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+/* 节点 */
+
+.node {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 1px solid #dcdcd6;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 4%);
+  user-select: none;
+  touch-action: none;
+}
+
+.node.selected {
+  border-color: #4a7fe0;
+  box-shadow: 0 0 0 2px rgb(74 127 224 / 22%);
+  z-index: 2;
+}
+
+.node-body {
+  position: absolute;
+  inset: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  overflow-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.node-body.empty::before {
+  content: '双击编辑';
+  color: #c6c6c0;
+}
+
+.node-handle {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 11px;
+  height: 11px;
+  border: 1px solid #9db6e4;
+  border-radius: 3px;
+  background: #fff;
+  opacity: 0;
+  cursor: nwse-resize;
+}
+
+.node:hover .node-handle,
+.node.selected .node-handle {
+  opacity: 1;
+}

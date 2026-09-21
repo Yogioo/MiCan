@@ -1,9 +1,9 @@
 // 画布：平移、缩放、点阵背景。
-import { cssTransform, gridMetrics, panBy, zoomAt } from '../core/view.mjs'
+import { cssTransform, gridMetrics, panBy, toWorld, zoomAt } from '../core/view.mjs'
 
 const ZOOM_SENSITIVITY = 0.0015
 
-export function mountCanvas({ getView, setView, subscribe }) {
+export function mountCanvas({ getView, setView, subscribe, onBackgroundPress, onBackgroundDblClick }) {
   const viewport = document.getElementById('viewport')
   const world = document.getElementById('world')
   const grid = document.getElementById('grid')
@@ -38,6 +38,7 @@ export function mountCanvas({ getView, setView, subscribe }) {
   viewport.addEventListener('pointerdown', (event) => {
     if (!isBackground(event.target) && !(event.button === 1 || spaceHeld)) return
     event.preventDefault()
+    if (isBackground(event.target)) onBackgroundPress()
     panning = { id: event.pointerId, x: event.clientX, y: event.clientY }
     viewport.setPointerCapture(event.pointerId)
     viewport.classList.add('panning')
@@ -59,6 +60,11 @@ export function mountCanvas({ getView, setView, subscribe }) {
 
   viewport.addEventListener('pointerup', endPan)
   viewport.addEventListener('pointercancel', endPan)
+
+  viewport.addEventListener('dblclick', (event) => {
+    if (!isBackground(event.target)) return
+    onBackgroundDblClick(toWorld(getView(), event.clientX, event.clientY))
+  })
 
   window.addEventListener('keydown', (event) => {
     if (event.key === ' ' && !spaceHeld) {
