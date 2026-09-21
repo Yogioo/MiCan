@@ -37,7 +37,8 @@ export function mountCanvas({ getView, setView, subscribe, onBackgroundPress, on
 
   viewport.addEventListener('pointerdown', (event) => {
     if (!isBackground(event.target) && !(event.button === 1 || spaceHeld)) return
-    event.preventDefault()
+    // 中键要挡掉浏览器的自动滚屏；左键不能挡，否则输入框不会失焦
+    if (event.button === 1) event.preventDefault()
     if (isBackground(event.target)) onBackgroundPress()
     panning = { id: event.pointerId, x: event.clientX, y: event.clientY }
     viewport.setPointerCapture(event.pointerId)

@@ -27,6 +27,7 @@ body {
   overflow: hidden;
   background: var(--bg);
   touch-action: none;
+  user-select: none;
 }
 
 #viewport.panning {
@@ -71,6 +72,8 @@ body.space-ready #viewport {
 /* 节点 */
 
 .node {
+  --pad-y: 12px;
+  --pad-x: 14px;
   position: absolute;
   top: 0;
   left: 0;
@@ -91,15 +94,133 @@ body.space-ready #viewport {
 .node-body {
   position: absolute;
   inset: 0;
-  padding: 12px 14px;
+  padding: var(--pad-y) var(--pad-x);
   overflow: auto;
   overflow-wrap: break-word;
-  white-space: pre-wrap;
 }
 
 .node-body.empty::before {
   content: '双击编辑';
   color: #c6c6c0;
+}
+
+.node.editing .node-handle {
+  display: none;
+}
+
+/* 编辑态：与渲染态同位置、同字号、同边距，切换不跳动 */
+.node-input {
+  position: absolute;
+  inset: 0;
+  padding: var(--pad-y) var(--pad-x);
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  resize: none;
+  overflow: auto;
+  word-break: break-word;
+  user-select: text;
+}
+
+/* markdown 正文 */
+
+.node-body > :first-child {
+  margin-top: 0;
+}
+
+.node-body > :last-child {
+  margin-bottom: 0;
+}
+
+.node-body p,
+.node-body ul,
+.node-body ol,
+.node-body pre,
+.node-body blockquote,
+.node-body table {
+  margin: 0 0 0.6em;
+}
+
+.node-body h1,
+.node-body h2,
+.node-body h3,
+.node-body h4 {
+  margin: 0.2em 0 0.5em;
+  line-height: 1.3;
+}
+
+.node-body h1 {
+  font-size: 1.5em;
+}
+
+.node-body h2 {
+  font-size: 1.25em;
+}
+
+.node-body h3,
+.node-body h4 {
+  font-size: 1.05em;
+}
+
+.node-body ul,
+.node-body ol {
+  padding-left: 1.4em;
+}
+
+.node-body li {
+  margin: 0.15em 0;
+}
+
+.node-body code {
+  padding: 0.1em 0.32em;
+  border-radius: 4px;
+  background: #f1f1ee;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 0.9em;
+}
+
+.node-body pre {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f6f6f3;
+  overflow: auto;
+}
+
+.node-body pre code {
+  padding: 0;
+  background: none;
+}
+
+.node-body blockquote {
+  padding-left: 0.8em;
+  border-left: 3px solid #dcdcd6;
+  color: #6b6b66;
+}
+
+.node-body table {
+  border-collapse: collapse;
+}
+
+.node-body th,
+.node-body td {
+  padding: 2px 6px;
+  border: 1px solid #dcdcd6;
+}
+
+.node-body a {
+  color: #2f6fd0;
+}
+
+.node-body img {
+  max-width: 100%;
+}
+
+.node-body hr {
+  border: 0;
+  border-top: 1px solid #e2e2dd;
 }
 
 .node-handle {

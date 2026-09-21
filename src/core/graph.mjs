@@ -43,3 +43,9 @@ export function resizeNode(graph, id, w, h) {
   node.w = Math.max(NODE_MIN_W, w)
   node.h = Math.max(NODE_MIN_H, h)
 }
+
+export function setNodeText(graph, id, text) {
+  const node = findNode(graph, id)
+  if (!node) return
+  node.text = text
+}
