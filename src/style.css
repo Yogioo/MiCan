@@ -1,0 +1,62 @@
+:root {
+  --bg: #fbfbfa;
+  --dot: #cfcfc9;
+  --ink: #26262b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  color: var(--ink);
+  font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#viewport {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: var(--bg);
+  touch-action: none;
+}
+
+#viewport.panning {
+  cursor: grabbing;
+}
+
+body.space-ready #viewport {
+  cursor: grab;
+}
+
+#grid {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(circle, var(--dot) 1.1px, transparent 1.1px);
+  /* background-size / background-position 由 canvas.mjs 按视图写入 */
+}
+
+#world {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  transform-origin: 0 0;
+}
+
+#edges,
+#nodes {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+}
