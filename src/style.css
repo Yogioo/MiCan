@@ -117,6 +117,20 @@ body.space-ready #viewport {
   transform-origin: 0 0;
 }
 
+#hint {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #b9b9b3;
+  font-size: 13px;
+  pointer-events: none;
+}
+
+#hint.hidden {
+  display: none;
+}
+
 #edges,
 #nodes {
   position: absolute;

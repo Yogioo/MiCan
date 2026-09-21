@@ -7,7 +7,8 @@ import {
   removeEdge,
   removeNode,
 } from '../core/graph.mjs'
-import { deserialize, serialize } from '../core/serialize.mjs'
+import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
+import { createHistory, push, redo as redoHistory, undo as undoHistory } from '../core/history.mjs'
 import { createView, zoomAt } from '../core/view.mjs'
 import { mountCanvas } from './canvas.mjs'
 import { mountEdges } from './edges.mjs'
@@ -27,6 +28,16 @@ export const state = {
 
 const subscribers = new Set()
 
+// 撤销：只认结构变化，连拖时快速连发的改动合并成一步。
+const history = createHistory()
+const COALESCE_MS = 500
+let lastRecord = 0
+
+function graphSnapshot() {
+  const { nodes, edges } = serialize(state)
+  return JSON.stringify({ nodes, edges })
+}
+
 export function subscribe(fn) {
   subscribers.add(fn)
   fn(state)
@@ -37,7 +48,13 @@ function notify() {
 }
 
 export function update(mutate) {
+  const before = graphSnapshot()
   mutate(state)
+  if (graphSnapshot() !== before) {
+    const now = Date.now()
+    if (now - lastRecord > COALESCE_MS) push(history, before)
+    lastRecord = now
+  }
   notify()
 }
 
@@ -126,6 +143,24 @@ function resetZoom() {
   })
 }
 
+function applyGraph(snapshot) {
+  const { nodes, edges } = JSON.parse(snapshot)
+  state.graph = deserialize({ version: FORMAT_VERSION, nodes, edges }).graph
+  state.selection = null
+  lastRecord = 0 // 下一次改动重新开一步
+  notify()
+}
+
+function undo() {
+  const snapshot = undoHistory(history, graphSnapshot())
+  if (snapshot !== null) applyGraph(snapshot)
+}
+
+function redo() {
+  const snapshot = redoHistory(history, graphSnapshot())
+  if (snapshot !== null) applyGraph(snapshot)
+}
+
 function exportJson() {
   const blob = new Blob([JSON.stringify(serialize(state), null, 2)], { type: 'application/json' })
   const url = URL.createObjectURL(blob)
@@ -179,10 +214,18 @@ function showMessage(text) {
 // 键盘
 
 window.addEventListener('keydown', (event) => {
-  if (event.key !== 'Delete' && event.key !== 'Backspace') return
   if (document.activeElement !== document.body) return // 编辑态不抢键
-  event.preventDefault()
-  deleteSelection()
+  const mod = event.ctrlKey || event.metaKey
+  if (mod && event.key.toLowerCase() === 'z') {
+    event.preventDefault()
+    if (event.shiftKey) redo()
+    else undo()
+    return
+  }
+  if (event.key === 'Delete' || event.key === 'Backspace') {
+    event.preventDefault()
+    deleteSelection()
+  }
 })
 
 mountCanvas({
@@ -198,6 +241,11 @@ const edges = mountEdges({ getState: () => state, update })
 const nodes = mountNodes({ getState: () => state, update, onConnectStart: edges.startConnection })
 const toolbar = mountToolbar({ getState: () => state, actions: { exportJson, importJson, resetZoom } })
 
+const hint = document.getElementById('hint')
+
+subscribe((next) => {
+  hint.classList.toggle('hidden', next.graph.nodes.length > 0)
+})
 subscribe(edges.render)
 subscribe(nodes.render)
 subscribe(toolbar.render)
