@@ -1,7 +1,8 @@
 // 装配层：持有状态，把状态变更分发给各个界面模块，并定义应用动作。
-import { NODE_DEFAULT_H, NODE_DEFAULT_W, createGraph, createNode, removeNode } from '../core/graph.mjs'
+import { NODE_DEFAULT_H, NODE_DEFAULT_W, createGraph, createNode, removeEdge, removeNode } from '../core/graph.mjs'
 import { createView } from '../core/view.mjs'
 import { mountCanvas } from './canvas.mjs'
+import { mountEdges } from './edges.mjs'
 import { mountNodes } from './nodes.mjs'
 
 export const state = {
@@ -40,6 +41,7 @@ function deleteSelection() {
   if (!selection) return
   update((draft) => {
     if (selection.kind === 'node') removeNode(draft.graph, selection.id)
+    else removeEdge(draft.graph, selection.id)
     draft.selection = null
   })
 }
@@ -68,5 +70,7 @@ mountCanvas({
   onBackgroundDblClick: createNodeAt,
 })
 
-const nodes = mountNodes({ getState: () => state, update })
+const edges = mountEdges({ getState: () => state, update })
+const nodes = mountNodes({ getState: () => state, update, onConnectStart: edges.startConnection })
+subscribe(edges.render)
 subscribe(nodes.render)

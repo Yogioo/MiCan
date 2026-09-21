@@ -4,7 +4,7 @@ import { renderMarkdown } from './markdown.mjs'
 
 const DRAG_THRESHOLD = 4 // 屏幕像素：移动超过它才算拖动，否则算点击选中
 
-export function mountNodes({ getState, update }) {
+export function mountNodes({ getState, update, onConnectStart }) {
   const layer = document.getElementById('nodes')
   const elements = new Map()
 
@@ -48,7 +48,7 @@ export function mountNodes({ getState, update }) {
   function createElement() {
     const el = document.createElement('div')
     el.className = 'node'
-    el.innerHTML = '<div class="node-body"></div><div class="node-handle"></div>'
+    el.innerHTML = '<div class="node-body"></div><div class="node-port"></div><div class="node-handle"></div>'
     el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('dblclick', (event) => {
       event.stopPropagation()
@@ -106,6 +106,13 @@ export function mountNodes({ getState, update }) {
     const id = el.dataset.id
     const node = getState().graph.nodes.find((item) => item.id === id)
     if (!node) return
+
+    // 右侧连接点：交给边层去拉一条线
+    if (event.target.closest('.node-port')) {
+      event.stopPropagation()
+      onConnectStart(id, event)
+      return
+    }
 
     const handle = Boolean(event.target.closest('.node-handle'))
     const origin = { px: event.clientX, py: event.clientY, x: node.x, y: node.y, w: node.w, h: node.h }

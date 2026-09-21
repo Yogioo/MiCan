@@ -62,11 +62,111 @@ body.space-ready #viewport {
   overflow: visible;
 }
 
-/* 边层只负责画，命中测试交给边自己开（见 .edge-hit） */
+/* 边层只负责画，命中测试交给边自己的 .edge-hit。
+   尺寸不能是 0：SVG 盒子为 0 时浏览器整层不绘制，overflow: visible 也救不回来。 */
 #edges {
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+/* 边 */
+
+#labels {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 0;
   height: 0;
+  overflow: visible;
+}
+
+.edge-line {
+  fill: none;
+  stroke: #b3b3ac;
+  stroke-width: 1.6;
+}
+
+/* 透明加粗的命中区，让细线也好点中 */
+.edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.edge.selected .edge-line {
+  stroke: #e0554a;
+}
+
+.edge-preview {
+  fill: none;
+  stroke: #9db6e4;
+  stroke-width: 1.6;
+  stroke-dasharray: 5 4;
   pointer-events: none;
+}
+
+.edge-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: 320px;
+  padding: 1px 6px;
+  border: 1px solid #e6e6e1;
+  border-radius: 5px;
+  background: var(--bg);
+  color: #5a5a55;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.edge-label.empty {
+  display: none;
+}
+
+.edge.selected .edge-label {
+  border-color: #e9a49c;
+  color: #c0483d;
+}
+
+.edge-input {
+  width: 180px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  user-select: text;
+}
+
+.node.drop-target {
+  border-color: #4a7fe0;
+  box-shadow: 0 0 0 2px rgb(74 127 224 / 22%);
+}
+
+.node-port {
+  position: absolute;
+  top: 50%;
+  right: -6px;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  border: 1.5px solid #9db6e4;
+  border-radius: 50%;
+  background: #fff;
+  opacity: 0;
+  cursor: crosshair;
+}
+
+.node:hover .node-port,
+.node.selected .node-port {
+  opacity: 1;
 }
 
 /* 节点 */

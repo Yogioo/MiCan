@@ -49,3 +49,29 @@ export function setNodeText(graph, id, text) {
   if (!node) return
   node.text = text
 }
+
+// ---- 边 ----
+
+export function findEdge(graph, id) {
+  return graph.edges.find((edge) => edge.id === id) ?? null
+}
+
+// 建边：不允许自连，也不重复建同向的边；建不出来返回 null。
+export function addEdge(graph, from, to) {
+  if (!from || !to || from === to) return null
+  if (!findNode(graph, from) || !findNode(graph, to)) return null
+  if (graph.edges.some((edge) => edge.from === from && edge.to === to)) return null
+  const edge = { id: newId('e'), from, to, label: '' }
+  graph.edges.push(edge)
+  return edge
+}
+
+export function removeEdge(graph, id) {
+  graph.edges = graph.edges.filter((edge) => edge.id !== id)
+}
+
+export function setEdgeLabel(graph, id, label) {
+  const edge = findEdge(graph, id)
+  if (!edge) return
+  edge.label = label
+}
