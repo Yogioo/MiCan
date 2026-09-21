@@ -10,15 +10,17 @@
 <body>
   <div id="toolbar">
     <span id="save-dot" title="已保存"></span>
-    <button id="btn-export" type="button">导出</button>
-    <button id="btn-import" type="button">导入</button>
+    <button id="btn-save" type="button">保存</button>
+    <button id="btn-save-as" type="button">另存为</button>
+    <button id="btn-open" type="button">打开</button>
     <button id="btn-reset" type="button">回 100%</button>
     <span id="zoom-value">100%</span>
+    <span id="workspace-path">未打开工作文件夹</span>
     <span id="toolbar-message"></span>
   </div>
   <div id="viewport">
     <div id="grid"></div>
-    <div id="hint">双击空白处新建节点</div>
+    <div id="hint">双击空白处新建文本节点，右键空白处新建命令节点</div>
     <div id="world">
       <svg id="edges">
         <defs>

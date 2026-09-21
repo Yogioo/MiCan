@@ -1,8 +1,8 @@
-// 存档格式：与 localStorage、.json 文件、Node 脚本共用的唯一结构。
+// 存档格式：与工作文件夹里的 mican.json 共用的唯一结构。
 import { NODE_MIN_H, NODE_MIN_W } from './graph.mjs'
 import { clampScale } from './view.mjs'
 
-export const FORMAT_VERSION = 1
+export const FORMAT_VERSION = 2
 
 export function serialize(state) {
   return {
@@ -10,11 +10,12 @@ export function serialize(state) {
     view: { x: state.view.x, y: state.view.y, scale: state.view.scale },
     nodes: state.graph.nodes.map((node) => ({
       id: node.id,
+      kind: node.kind,
       x: node.x,
       y: node.y,
       w: node.w,
       h: node.h,
-      text: node.text,
+      ...(node.kind === 'command' ? { command: node.command } : { file: node.file, text: node.text }),
     })),
     edges: state.graph.edges.map((edge) => ({
       id: edge.id,
@@ -37,14 +38,15 @@ export function deserialize(data) {
     for (const key of ['x', 'y', 'w', 'h']) {
       if (!Number.isFinite(node[key])) throw new Error(`节点 ${node.id} 的 ${key} 不是数字`)
     }
-    return {
-      id: node.id,
-      x: node.x,
-      y: node.y,
-      w: Math.max(NODE_MIN_W, node.w),
-      h: Math.max(NODE_MIN_H, node.h),
-      text: typeof node.text === 'string' ? node.text : '',
+    const size = { w: Math.max(NODE_MIN_W, node.w), h: Math.max(NODE_MIN_H, node.h) }
+    if (node.kind === 'command') {
+      return { id: node.id, kind: 'command', x: node.x, y: node.y, ...size, command: typeof node.command === 'string' ? node.command : '' }
     }
+    const file = typeof node.file === 'string' ? node.file : ''
+    if (!file || file.startsWith('/') || file.split(/[\\/]/).includes('..')) {
+      throw new Error(`节点 ${node.id} 的文件路径不合法：${file}`)
+    }
+    return { id: node.id, kind: 'text', x: node.x, y: node.y, ...size, file, text: typeof node.text === 'string' ? node.text : '' }
   })
 
   const ids = new Set(nodes.map((node) => node.id))

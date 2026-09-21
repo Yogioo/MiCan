@@ -16,8 +16,29 @@ export function createGraph() {
   return { nodes: [], edges: [] }
 }
 
-export function createNode({ x = 0, y = 0, w = NODE_DEFAULT_W, h = NODE_DEFAULT_H, text = '' } = {}) {
-  return { id: newId('n'), x, y, w, h, text }
+export function createNode({ kind = 'text', x = 0, y = 0, w = NODE_DEFAULT_W, h = NODE_DEFAULT_H, text = '', command = '', file = '' } = {}) {
+  const id = newId('n')
+  if (kind === 'command') return { id, kind, x, y, w, h, command }
+  return { id, kind: 'text', x, y, w, h, file: file || `docs/${id}.md`, text }
+}
+
+// 文件名的唯一入口：只留一个文件名，补上 .md，其余（路径分隔符、前导点）挡掉。
+export function normalizeFileName(name) {
+  const base = String(name).trim().replace(/[\\/]/g, '').replace(/^[.\s]+/, '')
+  if (!base) return null
+  return /\.md$/i.test(base) ? base : `${base}.md`
+}
+
+export function setNodeFile(graph, id, file) {
+  const node = findNode(graph, id)
+  if (!node) return
+  node.file = file
+}
+
+export function setNodeCommand(graph, id, command) {
+  const node = findNode(graph, id)
+  if (!node) return
+  node.command = command
 }
 
 export function findNode(graph, id) {

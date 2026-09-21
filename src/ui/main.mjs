@@ -4,8 +4,10 @@ import {
   NODE_DEFAULT_W,
   createGraph,
   createNode,
+  findNode,
   removeEdge,
   removeNode,
+  setNodeText,
 } from '../core/graph.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
 import { createHistory, push, redo as redoHistory, undo as undoHistory } from '../core/history.mjs'
@@ -15,14 +17,12 @@ import { mountEdges } from './edges.mjs'
 import { mountNodes } from './nodes.mjs'
 import { mountToolbar } from './toolbar.mjs'
 
-const STORAGE_KEY = 'mican'
-const SAVE_DELAY = 400
-
 export const state = {
   view: createView(),
   graph: createGraph(),
   selection: null,
-  saveState: 'saved',
+  workspace: null, // 工作文件夹的绝对路径，未打开时为 null
+  dirty: false,
   message: '',
 }
 
@@ -38,12 +38,17 @@ function graphSnapshot() {
   return JSON.stringify({ nodes, edges })
 }
 
+// 磁盘是「上次保存」的快照：这两个变量就是那条基准线。
+let savedSnapshot = graphSnapshot()
+let savedFiles = new Set()
+
 export function subscribe(fn) {
   subscribers.add(fn)
   fn(state)
 }
 
 function notify() {
+  state.dirty = graphSnapshot() !== savedSnapshot
   for (const fn of subscribers) fn(state)
 }
 
@@ -58,58 +63,104 @@ export function update(mutate) {
   notify()
 }
 
-// 启动：先读本地存档，读不出来就按空白画布启动，不打扰用户。
-try {
-  const raw = localStorage.getItem(STORAGE_KEY)
-  if (raw) {
-    const restored = deserialize(JSON.parse(raw))
-    state.view = restored.view
-    state.graph = restored.graph
-  }
-} catch (error) {
-  console.warn('[mican] 本地存档读不出来，按空白画布启动：', error)
+function resetHistory() {
+  history.past.length = 0
+  history.future.length = 0
+  lastRecord = 0
 }
 
-// 自动保存：改动防抖 400ms 落盘，关页面前补一次，避免最后一笔丢失。
-let written = JSON.stringify(serialize(state))
-let pending = null
-let timer = null
+// 接口
 
-function flush() {
-  clearTimeout(timer)
-  timer = null
-  if (pending === null) return
-  const payload = pending
-  pending = null
+async function api(route, body) {
+  const response = await fetch(route, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data.error ?? `请求失败（${response.status}）`)
+  return data
+}
+
+let messageTimer = null
+
+function showMessage(text) {
+  update((draft) => {
+    draft.message = text
+  })
+  clearTimeout(messageTimer)
+  messageTimer = setTimeout(() => update((draft) => { draft.message = '' }), 4000)
+}
+
+// ---- 保存 / 另存为 / 打开 ----
+
+function confirmDiscard() {
+  return !state.dirty || window.confirm('有未保存的改动，继续会丢掉它们。继续吗？')
+}
+
+function markSaved(text) {
+  savedSnapshot = graphSnapshot()
+  showMessage(text)
+}
+
+async function save() {
+  if (!state.workspace) return saveAs()
+  const docs = state.graph.nodes
+    .filter((node) => node.kind === 'text')
+    .map((node) => ({ file: node.file, content: node.text }))
+  const written = new Set(docs.map((doc) => doc.file))
+  const remove = [...savedFiles].filter((file) => !written.has(file))
   try {
-    localStorage.setItem(STORAGE_KEY, payload)
-    written = payload
-    state.saveState = 'saved'
+    await api('/api/save', { canvas: serialize(state), docs, remove })
   } catch (error) {
-    console.warn('[mican] 保存失败：', error)
-    return
+    return showMessage(`保存失败：${error.message}`)
   }
-  queueMicrotask(notify)
+  savedFiles = written
+  markSaved('已保存')
 }
 
-function scheduleSave(next) {
-  const payload = JSON.stringify(serialize(next))
-  if (payload === written || payload === pending) return
-  pending = payload
-  if (state.saveState !== 'pending') {
-    state.saveState = 'pending'
-    queueMicrotask(notify) // 让状态点变黄，但不打断当前这轮分发
+async function saveAs() {
+  if (!confirmDiscard()) return
+  const input = window.prompt('新工作文件夹的绝对路径（不存在或为空）', '')
+  if (!input) return
+  try {
+    const { root } = await api('/api/workspace', { path: input, mode: 'create' })
+    update((draft) => {
+      draft.workspace = root
+    })
+    savedFiles = new Set()
+    await save()
+  } catch (error) {
+    showMessage(`另存为失败：${error.message}`)
   }
-  clearTimeout(timer)
-  timer = setTimeout(flush, SAVE_DELAY)
 }
 
-window.addEventListener('pagehide', flush)
+async function openWorkspace() {
+  if (!confirmDiscard()) return
+  const input = window.prompt('工作文件夹的绝对路径', state.workspace ?? '')
+  if (!input) return
+  try {
+    const { root, canvas } = await api('/api/workspace', { path: input, mode: 'open' })
+    const restored = canvas ? deserialize(canvas) : null
+    update((draft) => {
+      draft.workspace = root
+      draft.graph = restored ? restored.graph : createGraph()
+      draft.view = restored ? restored.view : draft.view
+      draft.selection = null
+    })
+    savedFiles = new Set(restored ? restored.graph.nodes.filter((node) => node.kind === 'text').map((node) => node.file) : [])
+    resetHistory()
+    markSaved(restored ? '已打开' : '文件夹里没有画布存档，按空白画布打开')
+  } catch (error) {
+    showMessage(`打开失败：${error.message}`)
+  }
+}
 
-// 动作
+// ---- 节点 ----
 
-function createNodeAt(world) {
+function createNodeAt(world, kind) {
   const node = createNode({
+    kind,
     x: world.x - NODE_DEFAULT_W / 2,
     y: world.y - NODE_DEFAULT_H / 2,
   })
@@ -136,6 +187,40 @@ function clearSelection() {
   })
 }
 
+// ---- 运行命令 ----
+
+async function runCommand(id) {
+  const node = findNode(state.graph, id)
+  if (!node || node.kind !== 'command') return
+  if (!state.workspace) return showMessage('先保存或打开一个工作文件夹，命令才有地方跑')
+  if (!node.command.trim()) return showMessage('这个命令节点还没有命令')
+
+  const targets = state.graph.edges
+    .filter((edge) => edge.from === id)
+    .map((edge) => findNode(state.graph, edge.to))
+    .filter((item) => item?.kind === 'text')
+
+  showMessage(`运行中：${node.command.trim()}`)
+  let result
+  try {
+    result = await api('/api/exec', { command: node.command })
+  } catch (error) {
+    return showMessage(`运行失败：${error.message}`)
+  }
+
+  const record = { ...result, at: Date.now() }
+  update((draft) => {
+    findNode(draft.graph, id).result = record // 运行结果不进存档，撤销后就没了
+    if (!record.failed) for (const item of targets) setNodeText(draft.graph, item.id, record.output)
+  })
+
+  if (record.failed) showMessage(`退出码 ${record.code}，没有覆写下游文本节点`)
+  else if (targets.length === 0) showMessage('没有下游文本节点，输出只显示在节点上')
+  else showMessage(`输出已灌给 ${targets.length} 个下游文本节点，保存后落盘`)
+}
+
+// ---- 视图 / 存档 ----
+
 function resetZoom() {
   const viewport = document.getElementById('viewport')
   update((draft) => {
@@ -161,57 +246,7 @@ function redo() {
   if (snapshot !== null) applyGraph(snapshot)
 }
 
-function exportJson() {
-  const blob = new Blob([JSON.stringify(serialize(state), null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `mican-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.json`
-  link.click()
-  URL.revokeObjectURL(url)
-}
-
-// 导入用的隐藏 file input：常驻 DOM，方便复用
-const picker = document.createElement('input')
-picker.id = 'import-picker'
-picker.type = 'file'
-picker.accept = '.json,application/json'
-picker.hidden = true
-picker.addEventListener('change', onPickFile)
-document.body.append(picker)
-
-function importJson() {
-  picker.value = '' // 同一个文件也能再选一次
-  picker.click()
-}
-
-async function onPickFile() {
-  const file = picker.files?.[0]
-  if (!file) return
-  try {
-    const restored = deserialize(JSON.parse(await file.text()))
-    update((draft) => {
-      draft.view = restored.view
-      draft.graph = restored.graph
-      draft.selection = null
-      draft.message = ''
-    })
-  } catch (error) {
-    showMessage(`导入失败：${error.message}`)
-  }
-}
-
-let messageTimer = null
-
-function showMessage(text) {
-  update((draft) => {
-    draft.message = text
-  })
-  clearTimeout(messageTimer)
-  messageTimer = setTimeout(() => update((draft) => { draft.message = '' }), 4000)
-}
-
-// 键盘
+// ---- 键盘 ----
 
 window.addEventListener('keydown', (event) => {
   if (document.activeElement !== document.body) return // 编辑态不抢键
@@ -228,18 +263,32 @@ window.addEventListener('keydown', (event) => {
   }
 })
 
+window.addEventListener('beforeunload', (event) => {
+  if (!state.dirty) return
+  event.preventDefault()
+  event.returnValue = ''
+})
+
+// ---- 装配 ----
+
 mountCanvas({
   getView: () => state.view,
   setView: (view) => update((draft) => { draft.view = view }),
   subscribe,
   onBackgroundPress: clearSelection,
-  onBackgroundDblClick: createNodeAt,
+  onBackgroundDblClick: (world) => createNodeAt(world, 'text'),
   onResetZoom: resetZoom,
 })
 
 const edges = mountEdges({ getState: () => state, update })
-const nodes = mountNodes({ getState: () => state, update, onConnectStart: edges.startConnection })
-const toolbar = mountToolbar({ getState: () => state, actions: { exportJson, importJson, resetZoom } })
+const nodes = mountNodes({
+  getState: () => state,
+  update,
+  onConnectStart: edges.startConnection,
+  onRunCommand: runCommand,
+  onNewCommandNode: (world) => createNodeAt(world, 'command'),
+})
+const toolbar = mountToolbar({ getState: () => state, actions: { save, saveAs, openWorkspace, resetZoom } })
 
 const hint = document.getElementById('hint')
 
@@ -249,4 +298,3 @@ subscribe((next) => {
 subscribe(edges.render)
 subscribe(nodes.render)
 subscribe(toolbar.render)
-subscribe(scheduleSave)

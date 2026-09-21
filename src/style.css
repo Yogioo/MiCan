@@ -62,7 +62,7 @@ body {
   background: #7fbf7f;
 }
 
-#save-dot.pending {
+#save-dot.dirty {
   background: #e0a94a;
 }
 
@@ -70,6 +70,15 @@ body {
   min-width: 38px;
   color: #6b6b66;
   text-align: right;
+}
+
+#workspace-path {
+  max-width: 340px;
+  margin-left: 8px;
+  overflow: hidden;
+  color: #a3a39d;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 #toolbar-message:not(:empty) {
@@ -281,6 +290,79 @@ body.space-ready #viewport {
   color: #c6c6c0;
 }
 
+/* 文本节点：标题栏占顶部一条，正文从它下面开始 */
+.node.kind-text .node-body {
+  top: 26px;
+}
+
+.node-title {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 var(--pad-x);
+  border-bottom: 1px solid #f0f0ec;
+  border-radius: 10px 10px 0 0;
+  background: #fafaf8;
+}
+
+.node-file {
+  overflow: hidden;
+  color: #7a7a74;
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: text;
+}
+
+.node-file-input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  user-select: text;
+}
+
+/* 命令节点：底部一条状态，正文从它上面结束 */
+.node.kind-command .node-body {
+  bottom: 24px;
+  padding-top: 10px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.node.kind-command .node-body.empty::before {
+  content: '双击填写命令';
+}
+
+.node.kind-command .node-body.failed {
+  color: #c0483d;
+}
+
+.node-foot {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 24px;
+  padding: 0 var(--pad-x);
+  overflow: hidden;
+  color: #a3a39d;
+  font-size: 11px;
+  line-height: 24px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .node.editing .node-handle {
   display: none;
 }
@@ -416,4 +498,39 @@ body.space-ready #viewport {
 .node:hover .node-handle,
 .node.selected .node-handle {
   opacity: 1;
+}
+
+/* 右键菜单 */
+
+#menu {
+  position: fixed;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 132px;
+  padding: 4px;
+  border: 1px solid #e4e4df;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+}
+
+#menu[hidden] {
+  display: none;
+}
+
+#menu button {
+  padding: 5px 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+#menu button:hover {
+  background: #f0f0ec;
 }
