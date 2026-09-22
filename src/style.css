@@ -182,6 +182,12 @@ body.space-ready #viewport {
   cursor: pointer;
 }
 
+/* 注入边：连到命令节点的边是喂参数，不是收输出 */
+.edge.inject .edge-line {
+  stroke: #9db6e4;
+  stroke-dasharray: 5 4;
+}
+
 .edge.selected .edge-line {
   stroke: #e0554a;
 }

@@ -10,6 +10,7 @@ import {
   setNodeText,
 } from '../core/graph.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
+import { applyVars, collectVars } from '../core/vars.mjs'
 import { createHistory, push, redo as redoHistory, undo as undoHistory } from '../core/history.mjs'
 import { createView, zoomAt } from '../core/view.mjs'
 import { mountCanvas } from './canvas.mjs'
@@ -275,13 +276,23 @@ async function runCommand(id) {
   if (!node.command.trim()) return showMessage('这个命令节点还没有命令')
   if (state.running.has(id)) return showMessage('这个命令还在跑，等它结束')
 
+  // 变量注入只改这一次要跑的命令，命令节点上的模板不动
+  const { vars, errors } = collectVars(state.graph, id)
+  const injected = applyVars(node.command, vars)
+  const missing = [...new Set(injected.missing)]
+  if (errors.length || missing.length) {
+    if (missing.length) errors.push(`{{${missing.join('}}、{{')}}} 没有对应的入边`)
+    return showMessage(`变量没对上：${errors.join('；')}`)
+  }
+  const command = injected.command
+
   const targets = state.graph.edges
     .filter((edge) => edge.from === id)
     .map((edge) => findNode(state.graph, edge.to))
     .filter((item) => item?.kind === 'text')
 
   const startedAt = Date.now()
-  showMessage(`运行中：${node.command.trim()}`)
+  showMessage(`运行中：${command.trim()}`)
   state.running.set(id, startedAt)
   startTicking()
   update((draft) => {
@@ -307,7 +318,7 @@ async function runCommand(id) {
 
   let record
   try {
-    record = await streamExec(node.command, onChunk)
+    record = await streamExec(command, onChunk)
   } catch (error) {
     record = { code: 1, failed: true, output: error.message }
   }
@@ -322,6 +333,7 @@ async function runCommand(id) {
     timedOut: Boolean(record.timedOut),
     truncated: Boolean(record.truncated),
     output: text,
+    command, // 实际跑的命令（变量已替换），留着让节点上能回看
     at: Date.now(),
     elapsed: Date.now() - startedAt, // 跑完也留着，脚上照样看得到跑了多久
   }

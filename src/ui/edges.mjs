@@ -30,6 +30,8 @@ export function mountEdges({ getState, update }) {
       entry.line.setAttribute('d', d)
       const selected = state.selection?.kind === 'edge' && state.selection.id === edge.id
       entry.group.classList.toggle('selected', selected)
+      // 指到命令节点的边是喂参数，不是收输出：画成虚线，连反了一眼能看出来
+      entry.group.classList.toggle('inject', to.kind === 'command')
       entry.line.setAttribute('marker-end', selected ? 'url(#arrow-selected)' : 'url(#arrow)')
       entry.label.style.transform = `translate(${mid.x}px, ${mid.y}px) translate(-50%, -50%)`
       if (entry.labelText !== edge.label) {

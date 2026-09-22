@@ -59,6 +59,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     const running = state.running.has(node.id)
     const cmd = el.querySelector('.node-cmd')
     if (cmd.textContent !== node.command) cmd.textContent = node.command
+    // 命令里有 {{变量}} 时节点上留的是模板；鼠标停上去看实际跑了哪条
+    const resolved = node.result?.command
+    cmd.title = resolved && resolved !== node.command ? `实际执行：${resolved}` : ''
 
     // 运行中看增量、跑完看结果，都没有就空着 —— 命令始终在上面那条里
     const content = running ? node.live ?? '' : node.result ? node.result.output : ''
