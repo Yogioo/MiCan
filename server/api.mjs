@@ -1,10 +1,13 @@
 // 本地接口：持有工作文件夹，负责文件读写与命令执行。前端只发相对路径。
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 
 const CANVAS_FILE = 'mican.json'
 const DOCS_DIR = 'docs'
+const RECENT_FILE = path.join(os.homedir(), '.mican', 'recent.json')
+const RECENT_MAX = 8
 const EXEC_TIMEOUT_MS = 120_000
 const EXEC_MAX_OUTPUT = 64 * 1024
 const MAX_BODY = 32 * 1024 * 1024
@@ -19,13 +22,30 @@ export function createApi(initialRoot) {
     return target
   }
 
+  // 最近打开的工作文件夹：存在用户目录里，换浏览器、换端口都还在。
+  async function readRecent() {
+    try {
+      const items = JSON.parse(await fs.readFile(RECENT_FILE, 'utf8'))
+      return Array.isArray(items) ? items.filter((item) => typeof item === 'string') : []
+    } catch {
+      return [] // 没存过、或存坏了，都当没有历史
+    }
+  }
+
+  async function remember(dir) {
+    const items = [dir, ...(await readRecent()).filter((item) => item !== dir)].slice(0, RECENT_MAX)
+    await fs.mkdir(path.dirname(RECENT_FILE), { recursive: true }).catch(() => {})
+    await fs.writeFile(RECENT_FILE, JSON.stringify(items, null, 2), 'utf8').catch(() => {})
+    return items
+  }
+
   async function setWorkspace(dir, mode) {
     const target = path.resolve(dir)
     if (mode === 'create') {
       await fs.mkdir(target, { recursive: true })
       if ((await fs.readdir(target)).length > 0) throw new Error('目标文件夹不为空')
       root = target
-      return { root, canvas: null }
+      return { root, canvas: null, recent: await remember(target) }
     }
     const stat = await fs.stat(target).catch(() => null)
     if (!stat?.isDirectory()) throw new Error('文件夹不存在')
@@ -34,7 +54,31 @@ export function createApi(initialRoot) {
       .readFile(path.join(target, CANVAS_FILE), 'utf8')
       .then((raw) => JSON.parse(raw))
       .catch(() => null) // 没有存档就是空文件夹，照样能打开
-    return { root, canvas }
+    return { root, canvas, recent: await remember(target) }
+  }
+
+  // 列目录：给界面里的「浏览…」用，只给子目录和外加的上层入口。
+  async function listRoots() {
+    if (!IS_WINDOWS) return [{ name: '/', path: path.sep }]
+    const found = await Promise.all(
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(async (letter) => {
+        const drive = `${letter}:\\`
+        return (await fs.stat(drive).catch(() => null)) ? { name: drive, path: drive } : null
+      }),
+    )
+    return found.filter(Boolean)
+  }
+
+  async function browse(input) {
+    const wanted = input ? path.resolve(input) : root ?? os.homedir()
+    const start = (await fs.stat(wanted).catch(() => null))?.isDirectory() ? wanted : os.homedir()
+    const entries = await fs.readdir(start, { withFileTypes: true }).catch(() => [])
+    const dirs = entries
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map((entry) => ({ name: entry.name, path: path.join(start, entry.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh'))
+    const parent = path.dirname(start)
+    return { path: start, parent: parent === start ? null : parent, dirs, roots: await listRoots() }
   }
 
   async function save({ canvas, docs = [], remove = [] }) {
@@ -167,6 +211,8 @@ export function createApi(initialRoot) {
       if (req.method !== 'POST') throw new Error('只接受 POST')
       const body = await readBody(req)
       if (route === '/api/workspace') return send(res, 200, await setWorkspace(body.path, body.mode))
+      if (route === '/api/recent') return send(res, 200, { items: await readRecent() })
+      if (route === '/api/browse') return send(res, 200, await browse(body.path))
       if (route === '/api/save') {
         await save(body)
         return send(res, 200, { ok: true })

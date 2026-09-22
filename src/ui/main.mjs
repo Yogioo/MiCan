@@ -16,6 +16,7 @@ import { mountCanvas } from './canvas.mjs'
 import { mountEdges } from './edges.mjs'
 import { mountNodes } from './nodes.mjs'
 import { mountToolbar } from './toolbar.mjs'
+import { askDiscard, askWorkspace } from './workspace-dialog.mjs'
 
 export const state = {
   view: createView(),
@@ -95,13 +96,29 @@ function showMessage(text) {
 
 // ---- 保存 / 另存为 / 打开 ----
 
+// 最近打开过的文件夹，由后端记着（换浏览器、换端口都还在）。
+let recent = []
+
+async function loadRecent() {
+  try {
+    recent = (await api('/api/recent', {})).items ?? []
+  } catch {
+    recent = []
+  }
+}
+
 function confirmDiscard() {
-  return !state.dirty || window.confirm('有未保存的改动，继续会丢掉它们。继续吗？')
+  return !state.dirty || askDiscard('有未保存的改动，继续会丢掉它们。')
 }
 
 function markSaved(text) {
   savedSnapshot = graphSnapshot()
   showMessage(text)
+}
+
+// 后端把这次的文件夹排到了历史最前面，前端跟着换一份。
+function remember(response) {
+  recent = response.recent ?? recent
 }
 
 async function save() {
@@ -121,39 +138,53 @@ async function save() {
 }
 
 async function saveAs() {
-  if (!confirmDiscard()) return
-  const input = window.prompt('新工作文件夹的绝对路径（不存在或为空）', '')
-  if (!input) return
-  try {
-    const { root } = await api('/api/workspace', { path: input, mode: 'create' })
-    update((draft) => {
-      draft.workspace = root
-    })
-    savedFiles = new Set()
-    await save()
-  } catch (error) {
-    showMessage(`另存为失败：${error.message}`)
+  if (!(await confirmDiscard())) return
+  let initial = ''
+  let error = ''
+  for (;;) {
+    const input = await askWorkspace({ mode: 'create', initial, recent, error })
+    if (!input) return
+    try {
+      const response = await api('/api/workspace', { path: input, mode: 'create' })
+      remember(response)
+      update((draft) => {
+        draft.workspace = response.root
+      })
+      savedFiles = new Set()
+      await save()
+      return
+    } catch (failure) {
+      initial = input // 弹窗重新开，错误写在里面，路径不用重打
+      error = `另存为失败：${failure.message}`
+    }
   }
 }
 
 async function openWorkspace() {
-  if (!confirmDiscard()) return
-  const input = window.prompt('工作文件夹的绝对路径', state.workspace ?? '')
-  if (!input) return
-  try {
-    const { root, canvas } = await api('/api/workspace', { path: input, mode: 'open' })
-    const restored = canvas ? deserialize(canvas) : null
-    update((draft) => {
-      draft.workspace = root
-      draft.graph = restored ? restored.graph : createGraph()
-      draft.view = restored ? restored.view : draft.view
-      draft.selection = null
-    })
-    savedFiles = new Set(restored ? restored.graph.nodes.filter((node) => node.kind === 'text').map((node) => node.file) : [])
-    resetHistory()
-    markSaved(restored ? '已打开' : '文件夹里没有画布存档，按空白画布打开')
-  } catch (error) {
-    showMessage(`打开失败：${error.message}`)
+  if (!(await confirmDiscard())) return
+  let initial = state.workspace ?? recent[0] ?? ''
+  let error = ''
+  for (;;) {
+    const input = await askWorkspace({ mode: 'open', initial, recent, error })
+    if (!input) return
+    try {
+      const { root, canvas, ...rest } = await api('/api/workspace', { path: input, mode: 'open' })
+      remember(rest)
+      const restored = canvas ? deserialize(canvas) : null
+      update((draft) => {
+        draft.workspace = root
+        draft.graph = restored ? restored.graph : createGraph()
+        draft.view = restored ? restored.view : draft.view
+        draft.selection = null
+      })
+      savedFiles = new Set(restored ? restored.graph.nodes.filter((node) => node.kind === 'text').map((node) => node.file) : [])
+      resetHistory()
+      markSaved(restored ? '已打开' : '文件夹里没有画布存档，按空白画布打开')
+      return
+    } catch (failure) {
+      initial = input
+      error = `打开失败：${failure.message}`
+    }
   }
 }
 
@@ -379,6 +410,7 @@ const nodes = mountNodes({
   onNewCommandNode: (world) => createNodeAt(world, 'command'),
 })
 const toolbar = mountToolbar({ getState: () => state, actions: { save, saveAs, openWorkspace, resetZoom } })
+loadRecent()
 
 const hint = document.getElementById('hint')
 

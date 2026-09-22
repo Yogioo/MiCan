@@ -580,3 +580,174 @@ body.space-ready #viewport {
 #menu button:hover {
   background: #f0f0ec;
 }
+
+/* 弹窗（工作文件夹 / 未保存改动确认） */
+
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 16%);
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(560px, calc(100vw - 48px));
+  max-height: calc(100vh - 64px);
+  padding: 14px;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 18%);
+  font-size: 12px;
+}
+
+.modal-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+
+.modal-label {
+  margin-bottom: 2px;
+  color: #a3a39d;
+  font-size: 11px;
+}
+
+.modal-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.modal-path {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #e4e4df;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+}
+
+.modal-path:focus,
+.modal button:focus-visible {
+  outline: 2px solid #c9d8ef;
+  outline-offset: 0;
+}
+
+.modal button {
+  padding: 5px 10px;
+  border: 1px solid #e4e4df;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.modal button:hover:not(:disabled) {
+  background: #f0f0ec;
+}
+
+.modal button:disabled {
+  color: #c4c4be;
+  cursor: default;
+}
+
+.modal button.primary {
+  border-color: #cfe0ff;
+  background: #eaf1ff;
+}
+
+.modal-error:empty {
+  display: none;
+}
+
+.modal-error {
+  color: #c0483d;
+}
+
+.modal-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.modal-list:empty {
+  display: none;
+}
+
+.modal-list {
+  max-height: 170px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  border: 1px solid #eee;
+  border-radius: 6px;
+  list-style: none;
+}
+
+.modal-list li {
+  overflow: hidden;
+  padding: 4px 8px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.modal-list li:hover {
+  background: #f0f0ec;
+}
+
+.modal-list li.muted {
+  color: #b9b9b3;
+  cursor: default;
+}
+
+.modal-browser {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.modal-browser.hidden {
+  display: none;
+}
+
+.browser-head .browser-path {
+  min-width: 0;
+  overflow: hidden;
+  color: #6b6b66;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.browser-roots:empty {
+  display: none;
+}
+
+.browser-roots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.browser-roots button {
+  padding: 2px 7px;
+}
+
+.browser-pick {
+  align-self: flex-end;
+}
