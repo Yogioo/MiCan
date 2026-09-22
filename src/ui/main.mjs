@@ -2,10 +2,6 @@
 import {
   createGraph,
   createNode,
-  dataInto,
-  dataOut,
-  execIn,
-  execOutAll,
   findNode,
   removeEdge,
   removeNode,
@@ -15,10 +11,7 @@ import {
   setNodeText,
 } from '../core/graph.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
-import { routeFrom } from '../core/chain.mjs'
-import { pickValue } from '../core/pick.mjs'
 import { applyCanvas, applyMachine, canvas, machine } from '../core/settings.mjs'
-import { applyVars, collectVars } from '../core/vars.mjs'
 import { createHistory, push, redo as redoHistory, undo as undoHistory } from '../core/history.mjs'
 import { createView, zoomAt } from '../core/view.mjs'
 import { mountCanvas } from './canvas.mjs'
@@ -36,9 +29,9 @@ export const state = {
   // 跟机器走的那些值（命令行、超时、界面手感）不住在这儿：它们住在 core/settings.mjs，现读现用；
   // 运行目录属于画布，在 canvas.cwd
   running: new Map(), // 运行中的命令节点：id -> 开跑时间。只活在内存里，不进存档
-  // 正在走的链路：{ stopped }。链路不是进程 —— 两次命令之间的空档它也在，
-  // 所以右下角那个停止按钮不会一闪一闪，停止的意思也不只是「把当前这个命令断掉」。
-  chain: null,
+  // 后端在跑的每一次运行：runId -> { mode, nodeId, startedAt, nodes }。链也是其中一条，
+  // 它不由某个进程代表（两步之间的空档也在跑），所以右下角那个停止按钮看的是这张表。
+  runs: new Map(),
   saving: false, // 有一次落盘还在路上
   message: '',
 }
@@ -334,54 +327,138 @@ function stopTicking() {
   ticking = null
 }
 
-// 在飞的命令的中止把手：节点 id -> AbortController。只活在内存里。
+// 在飞的订阅：runId -> AbortController。只活在内存里，退订用。
 const aborts = new Map()
 
-// 停止：把在飞的命令全断掉 —— 连着的那条 HTTP 一断，后端就把整棵进程树收掉
-// （server/api.mjs 的 res.on('close')）。链路另外记一笔，它下一圈开头会自己停。
+// 停止：逐条发到后端 —— 跑的是它，断链也得是它。光断订阅断不掉：
+// 订阅断了只是不看了，链还在后端走（ADR-0009）。
 function stopRunning() {
-  if (state.chain) state.chain.stopped = true
-  for (const controller of aborts.values()) controller.abort()
+  for (const runId of state.runs.keys()) {
+    api(`/api/run/${runId}/stop`, {}).catch((error) => showMessage(error.message))
+  }
 }
 
-// 按 NDJSON 行读 /api/exec 的输出流，边收边回调；返回最后那行终止信息。
-async function streamExec(command, cwd, onChunk, signal) {
-  const response = await fetch('/api/exec', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ command, cwd }),
-    signal,
-  })
-  if (!response.ok || !response.body) {
-    const data = await response.json().catch(() => ({}))
-    throw new Error(data.error ?? `请求失败（${response.status}）`)
-  }
+// ---- 运行 ----
+// 跑命令和跑链路都在后端（ADR-0006）：它自己读画布、自己走路、自己把结果写盘，
+// 所以页面关掉也照跑；这里只把事件流摊到界面上。
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  let exit = null
-  for (;;) {
-    const { value, done } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    // JSON 里的换行是转义过的，按真换行切行是安全的
-    for (let index = buffer.indexOf('\n'); index >= 0; index = buffer.indexOf('\n')) {
-      const line = buffer.slice(0, index)
-      buffer = buffer.slice(index + 1)
-      if (!line.trim()) continue
-      const message = JSON.parse(line)
-      if (message.type === 'chunk') onChunk(message.data)
-      else if (message.type === 'exit') exit = message
+async function startRun(mode, id) {
+  await flush() // 它要读盘上的画布与缓存文件，待写的先写完
+  try {
+    const { runId } = await api('/api/run', { mode, id })
+    watchRun(runId)
+  } catch (error) {
+    showMessage(error.message)
+  }
+}
+
+const onRunCommand = (id) => startRun('node', id)
+const onRunChain = (id) => startRun('chain', id)
+
+// 网页重开时后端可能还有链在走（页面关着也跑）—— 把在跑的都接上。
+async function resumeRuns() {
+  try {
+    for (const item of (await api('/api/runs', {})).items ?? []) watchRun(item.runId)
+  } catch {
+    // 读不到就当没有在跑的
+  }
+}
+
+// 按 NDJSON 行读一次运行的事件流，边收边摊到界面上。
+async function watchRun(runId) {
+  const controller = new AbortController()
+  aborts.set(runId, controller)
+  try {
+    const response = await fetch(`/api/run/${runId}/events`, { signal: controller.signal })
+    if (!response.ok || !response.body) throw new Error(`订阅失败（${response.status}）`)
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    for (;;) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      // JSON 里的换行是转义过的，按真换行切行是安全的
+      for (let at = buffer.indexOf('\n'); at >= 0; at = buffer.indexOf('\n')) {
+        const line = buffer.slice(0, at)
+        buffer = buffer.slice(at + 1)
+        if (line.trim()) applyRunEvent(runId, JSON.parse(line))
+      }
     }
+  } catch (error) {
+    if (!controller.signal.aborted) showMessage(`运行的订阅断了：${error.message}`)
+  } finally {
+    aborts.delete(runId)
+    // 流断了但没收到 end：把这次运行留在节点上的「运行中」收干净
+    for (const id of state.runs.get(runId)?.nodes ?? []) state.running.delete(id)
+    state.runs.delete(runId)
+    stopTicking()
+    update(() => {})
   }
-  return exit ?? { code: 1, failed: true, output: '连接断了，命令没有回来' }
 }
 
-// 命令的运行目录：节点自己设了就用节点的（覆盖），没设就看这份画布的，都没有就是工作文件夹。
-// 两层都进存档（节点那个在节点上、画布那个在存档顶层），所以换台机器打开会跟着带过去。
-function runDirOf(node) {
-  return node.cwd || canvas.cwd || ''
+// 后端的一件件事摊到界面上：起跑、这一步开跑、来了一块输出、这一步跑完、没走到的那些、整次结束。
+function applyRunEvent(runId, event) {
+  if (event.t === 'run') {
+    state.runs.set(runId, { mode: event.mode, nodeId: event.nodeId, startedAt: event.startedAt, nodes: new Set([event.nodeId]) })
+    update(() => {})
+    return
+  }
+  if (event.t === 'step') {
+    state.runs.get(runId)?.nodes.add(event.nodeId)
+    state.running.set(event.nodeId, event.startedAt)
+    startTicking()
+    update((draft) => {
+      const node = findNode(draft.graph, event.nodeId)
+      if (!node) return // 跑起来之前它可能已经被删了
+      node.result = null // 上次输出先清掉，节点上只留命令，输出从头攒
+      node.live = ''
+      node.skipped = false
+    })
+    return
+  }
+  if (event.t === 'chunk') {
+    const node = findNode(state.graph, event.nodeId)
+    if (node) node.live = `${node.live ?? ''}${event.data}`
+    repaint()
+    return
+  }
+  if (event.t === 'done') {
+    state.running.delete(event.nodeId)
+    stopTicking()
+    update((draft) => {
+      const node = findNode(draft.graph, event.nodeId)
+      // 跑的时候节点可能已经被删了或被撤销掉了
+      if (node) {
+        node.result = event.result // 裸输出进缓存文件、元信息进存档
+        node.live = ''
+      }
+      for (const item of event.texts ?? []) setNodeText(draft.graph, item.nodeId, item.text)
+    })
+    scheduleSave() // 后端补进存档的那几个键，也从这边过一道，别只在内存里
+    return
+  }
+  if (event.t === 'skipped') {
+    markSkipped(event.ids ?? [])
+    return
+  }
+  if (event.t === 'end') {
+    state.runs.delete(runId)
+    stopTicking()
+    showMessage(event.message)
+    update(() => {})
+  }
+}
+
+// 输出一块块来：重绘按帧合并，别让快命令把渲染拖住
+let waitingFrame = false
+function repaint() {
+  if (waitingFrame) return
+  waitingFrame = true
+  requestAnimationFrame(() => {
+    waitingFrame = false
+    update(() => {})
+  })
 }
 
 // 设置窗口：全局配置和存档配置都在里面改，值由后端存、存档自己落盘。
@@ -415,186 +492,6 @@ async function setRunDir(id) {
   if (dir === null || dir === (node.cwd ?? '')) return
   update((draft) => setNodeCwd(draft.graph, id, dir))
 }
-
-// 跑一个命令节点：变量按「此刻」的取值替换，输出边收边显示，跑完写进下游文本节点。
-// 成败都返回，让调用方决定怎么说 —— 单跑和跑链用同一套，只差说法。
-async function runNode(id) {
-  const node = findNode(state.graph, id)
-  if (!node || node.kind !== 'command') return { ok: false, reason: '这个节点运行不了' }
-  if (!state.workspace) return { ok: false, reason: '先打开一个工作文件夹，命令才有地方跑' }
-  if (!node.command.trim()) return { ok: false, reason: '这个命令节点还没有命令' }
-  if (state.running.has(id)) return { ok: false, reason: '这个命令还在跑，等它结束' }
-
-  // 变量注入只改这一次要跑的命令，命令节点上的模板不动；取值是「此刻」的，
-  // 所以跑链时上游刚写下的缓存文件也能被读到。
-  const { vars, errors } = collectVars(state.graph, id, state.workspace)
-  const injected = applyVars(node.command, vars)
-  const problems = [...new Set([...errors, ...injected.problems])]
-  if (problems.length) return { ok: false, reason: `变量没对上：${problems.join('；')}` }
-  const command = injected.command
-
-  // 只有数据边把输出带得走；执行边只表达先后，不带数据
-  const targets = dataOut(state.graph, id)
-    .map((edge) => findNode(state.graph, edge.to))
-    .filter((item) => item?.kind === 'text')
-
-  const runDir = runDirOf(node)
-  const startedAt = Date.now()
-  const controller = new AbortController()
-  aborts.set(id, controller)
-  state.running.set(id, startedAt)
-  startTicking()
-  update((draft) => {
-    const target = findNode(draft.graph, id)
-    if (!target) return // 跑起来之前它可能已经被删了
-    target.result = null // 上次输出先清掉，节点上只留命令，输出从头攒
-    target.live = ''
-    target.skipped = false
-  })
-
-  // 输出一块块来：先攒进 live，重绘按帧合并，别让快命令把渲染拖住
-  let output = ''
-  let waitingFrame = false
-  const onChunk = (text) => {
-    output += text
-    const target = findNode(state.graph, id)
-    if (target) target.live = output
-    if (waitingFrame) return
-    waitingFrame = true
-    requestAnimationFrame(() => {
-      waitingFrame = false
-      update(() => {})
-    })
-  }
-
-  let record
-  try {
-    record = await streamExec(command, runDir, onChunk, controller.signal)
-  } catch (error) {
-    // 点了停止：这不算命令自己失败，单独记一笔，节点上写「已停止」而不是退出码
-    record = controller.signal.aborted
-      ? { code: 1, failed: true, stopped: true, output: '' }
-      : { code: 1, failed: true, output: error.message }
-  }
-
-  aborts.delete(id)
-  state.running.delete(id)
-  stopTicking()
-
-  const text = output || record.output || ''
-  const result = {
-    code: record.code,
-    failed: Boolean(record.failed),
-    stopped: Boolean(record.stopped),
-    timedOut: Boolean(record.timedOut),
-    truncated: Boolean(record.truncated),
-    output: text,
-    command, // 实际跑的命令（变量已替换），留着让节点上能回看
-    at: Date.now(),
-    elapsed: Date.now() - startedAt, // 跑完也留着，脚上照样看得到跑了多久
-  }
-  update((draft) => {
-    const target = findNode(draft.graph, id)
-    // 跑的时候节点可能已经被删了或被撤销掉了
-    if (target) {
-      target.result = result // 裸输出进缓存文件、元信息进存档
-      target.live = ''
-    }
-    if (!result.failed) for (const item of targets) setNodeText(draft.graph, item.id, text)
-  })
-
-  return { ok: true, result, targets: targets.length }
-}
-
-async function runCommand(id) {
-  await flush()
-  const outcome = await runOne(id)
-  if (!outcome.ok) return showMessage(outcome.reason)
-  if (outcome.result.stopped) showMessage('已停止，没有覆写下游文本节点')
-  else if (outcome.result.failed) showMessage(`退出码 ${outcome.result.code}，没有覆写下游文本节点`)
-  else if (outcome.targets === 0) showMessage('没有下游文本节点，输出只显示在节点上')
-  else showMessage(`输出已灌给 ${outcome.targets} 个下游文本节点`)
-  await saveNow() // 跑完立刻落盘：缓存文件得马上在盘上，下游和断电都等着它
-}
-
-// 跑一个节点：命令节点去 spawn，提取节点只算值。链里每一步都走这道门。
-function runOne(id) {
-  return findNode(state.graph, id)?.kind === 'extract' ? runExtract(id) : runNode(id)
-}
-
-// 一个节点的「值」的正文：文本节点是那份 md，会跑的节点是最近一次运行的输出。
-function valueText(node) {
-  if (!node) return ''
-  if (node.kind === 'text') return node.text ?? ''
-  return node.result?.output ?? ''
-}
-
-// 提取节点的源：默认取执行来路那个节点的值（先后由执行边给），有数据入边就用那份文本。
-function sourceTextOf(node) {
-  const edge = dataInto(state.graph, node.id)[0]
-  if (edge) return valueText(findNode(state.graph, edge.from))
-  const inEdge = execIn(state.graph, node.id)
-  return inEdge ? valueText(findNode(state.graph, inEdge.from)) : ''
-}
-
-// 跑一个提取节点：拿源文本按取法取出一个字符串，那就是它的值。它不 spawn 任何进程，
-// 所以是瞬时的 —— 但也照样落缓存文件，于是 {{名字}} / [[名字]] 对它同样成立。
-async function runExtract(id) {
-  const node = findNode(state.graph, id)
-  if (!node) return { ok: false, reason: '这个节点运行不了' }
-  const startedAt = Date.now()
-  const { value, error } = pickValue(sourceTextOf(node), node.pick ?? '')
-  if (error) return { ok: false, reason: `提取不出值：${error}` }
-
-  const targets = dataOut(state.graph, id)
-    .map((edge) => findNode(state.graph, edge.to))
-    .filter((item) => item?.kind === 'text')
-  update((draft) => {
-    const target = findNode(draft.graph, id)
-    if (target) {
-      target.result = { output: value, at: Date.now(), elapsed: Date.now() - startedAt }
-      target.skipped = false
-    }
-    for (const item of targets) setNodeText(draft.graph, item.id, value)
-  })
-  return { ok: true, result: { failed: false, output: value }, targets: targets.length }
-}
-
-// 跑链路：从入口开始，每一步拿当前节点的值按标签挑下一根执行出边，一个失败就停。
-// 出边可以成环，所以「后面还有几个没跑」在这儿算不出来 —— 兜「跑飞了」只有步数上限。
-async function runChain(entryId) {
-  await flush() // 第一步就要读盘上的东西，待写的先写完
-  // 停止按钮是全局的一个，但「停」对链路来说不只是把当前那个命令断掉：中间的空档里也没有东西在跑，
-  // 不记这笔的话，点了停止下一圈又把下一个节点跑起来了。所以链路自己带一个标记，每圈开头看一眼。
-  state.chain = { stopped: false }
-  try {
-    let cursor = entryId
-    for (let index = 0; index < canvas.stepLimit; index += 1) {
-      if (state.chain.stopped) return showMessage(`已停止：跑了 ${index} 步`)
-      const outcome = await runOne(cursor)
-      if (!outcome.ok) return showMessage(`第 ${index + 1} 步没跑起来：${outcome.reason}`)
-      await saveNow() // 走一步落一次盘：下一个节点要读它的缓存文件，断在这儿也不白跑
-      if (state.chain.stopped) return showMessage(`已停止：跑了 ${index + 1} 步`)
-      if (outcome.result.failed) return showMessage(`第 ${index + 1} 步退出码 ${outcome.result.code}，链停在这儿`)
-      const value = (outcome.result.output ?? '').trim()
-      const next = routeFrom(state.graph, cursor, value)
-      if (next.done) return showMessage(`链路跑完：${index + 1} 步，走到一个没有出边的节点`)
-      if (next.stuck) {
-        // 它本来可能走的那几根都记上「未运行」，不然分不清「没走」和「走了是空的」
-        markSkipped(execOutAll(state.graph, cursor).map((edge) => edge.to))
-        return showMessage(`第 ${index + 1} 步的值是「${clip(value)}」，出边上的标签是「${next.labels.join('、')}」，一根都不匹配，停在这儿`)
-      }
-      cursor = next.to
-    }
-    return showMessage(`走了 ${canvas.stepLimit} 步还没停，多半是环没兜住，停下来别再走了`)
-  } finally {
-    state.chain = null
-    update(() => {}) // 光把它置空不会重绘，右下角那个按钮收不掉
-  }
-}
-
-// 提示里别把一整份输出塞进去
-const clip = (text) => (text.length > 24 ? `${text.slice(0, 24)}…` : text)
 
 // 没走到的那些在节点上留一句话，不然分不清「没走」和「走了是空的」。
 // 这不是画布状态（不进存档），所以不走历史也不排落盘。
@@ -677,8 +574,8 @@ const nodes = mountNodes({
   getState: () => state,
   update,
   onConnectStart: edges.startConnection,
-  onRunCommand: runCommand,
-  onRunChain: runChain,
+  onRunCommand,
+  onRunChain,
   // 菜单里只在「没有执行入边」的节点上给这一项，所以 setNodeEntry 不会拒绝
   onToggleEntry: (id) => update((draft) => setNodeEntry(draft.graph, id, !findNode(draft.graph, id)?.entry)),
   onNewCommandNode: (world) => createNodeAt(world, 'command'),
@@ -686,10 +583,12 @@ const nodes = mountNodes({
   onSetRunDir: setRunDir,
 })
 const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, stop: stopRunning } })
-// 设置要先读到（全局运行目录、启动要打开哪个工作文件夹都在里面），所以这两句串起来做
+// 设置要先读到（全局运行目录、启动要打开哪个工作文件夹都在里面），所以这几句串起来做
+// 最后一句把后端还在跑的链接回来：页面关着的时候它可能已经跑起来了（ADR-0009）。
 loadRecent()
   .then(loadSettings)
   .then(openStartupWorkspace)
+  .then(resumeRuns)
 
 const hint = document.getElementById('hint')
 

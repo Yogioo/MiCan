@@ -1,9 +1,10 @@
 // 本地接口：持有工作文件夹，负责文件读写与命令执行。前端只发相对路径。
-import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, cacheFile } from '../src/core/paths.mjs'
+import { shellNames } from './exec.mjs'
+import { createRunner } from './runner.mjs'
 
 const RECENT_FILE = path.join(os.homedir(), '.mican', 'recent.json')
 const SETTINGS_FILE = path.join(os.homedir(), '.mican', 'settings.json')
@@ -19,29 +20,13 @@ const MAX_RECENT_MAX = 50
 const MAX_BODY = 32 * 1024 * 1024
 const IS_WINDOWS = process.platform === 'win32'
 
-// 命令行：设置里存的是名字，这里落成「怎么起它」。名字不认识就报错，不猜。
-// cmd 那条带 chcp：Windows 默认代码页是 GBK，先让子进程尽量说 UTF-8（说不完的 createDecoder 再兜）。
-// 命令整串用双引号裹起来 + windowsVerbatimArguments，这两下缺一不可：
-// 不这么干，命令里的双引号会原样漏给被调程序 —— findstr /c:"yes" 会去找字面量 "yes"，
-// node -e "…" 会收到断成两半的参数。
-const SHELLS = {
-  cmd: (command) => ({ file: 'cmd.exe', args: ['/d', '/s', '/c', `"chcp 65001>nul && ${command}"`], verbatim: true }),
-  sh: (command) => ({ file: '/bin/sh', args: ['-c', command], verbatim: false }),
-  bash: (command) => ({ file: 'bash', args: ['-c', command], verbatim: false }),
-  powershell: (command) => ({ file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', command], verbatim: false }),
-  pwsh: (command) => ({ file: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', command], verbatim: false }),
-}
-
-// 空串 = 跟这台机器的默认（Windows 上 cmd，其余 sh）
-function shellOf(name, command) {
-  const wanted = String(name ?? '').trim().toLowerCase()
-  const build = SHELLS[wanted || (IS_WINDOWS ? 'cmd' : 'sh')]
-  if (!build) throw new Error(`不认识的行命令行：${name}（可填 ${Object.keys(SHELLS).join(' / ')}）`)
-  return build(command)
-}
+// 命令行怎么起、输出怎么解码、进程树怎么收：都在 server/exec.mjs 一个文件里。
 
 export function createApi(initialRoot) {
   let root = initialRoot ? path.resolve(initialRoot) : null
+
+  // 跑链的人：它读盘上的画布、自己走图、自己把结果写盘。它占着哪个文件，下面的 save 就跳过哪个。
+  const runner = createRunner({ getRoot: () => root, resolveCwd, readSettings })
 
   function inside(relative) {
     const target = path.resolve(root, relative)
@@ -130,9 +115,13 @@ export function createApi(initialRoot) {
     }
   }
 
+  // 前端把内存镜像整包推过来（ADR-0003）。跑链期间不然：运行器正在写的那些文件它不碰，
+  // 否则会把它刚写下的盖回旧的（ADR-0009）。名单是「此刻」的，所以逐项现问，别提前算。
   async function save({ canvas, docs = [], cache = [] }) {
     if (!root) throw new Error('还没有工作文件夹')
     const previous = await lastCanvas()
+    docs = docs.filter((doc) => !runner.ownsFile(doc.file))
+    cache = cache.filter((item) => !runner.owns(item.id))
 
     await fs.mkdir(path.join(root, DOCS_DIR), { recursive: true })
     for (const doc of docs) {
@@ -150,7 +139,8 @@ export function createApi(initialRoot) {
     const cacheDir = path.join(root, CACHE_DIR)
     const keepCache = new Set(cache.map((item) => item.id))
     for (const name of await fs.readdir(cacheDir).catch(() => [])) {
-      if (!name.endsWith(CACHE_EXT) || keepCache.has(name.slice(0, -CACHE_EXT.length))) continue
+      const id = name.slice(0, -CACHE_EXT.length)
+      if (!name.endsWith(CACHE_EXT) || keepCache.has(id) || runner.owns(id)) continue
       await fs.rm(path.join(cacheDir, name), { force: true })
     }
 
@@ -158,42 +148,12 @@ export function createApi(initialRoot) {
     // 会跑的节点（命令、提取）都没有 file，而 previous 是直接读的存档、没校验过。
     const keepDocs = new Set(docs.map((doc) => doc.file))
     for (const node of previous?.nodes ?? []) {
-      if (!node.file || keepDocs.has(node.file)) continue
+      if (!node.file || keepDocs.has(node.file) || runner.ownsFile(node.file)) continue
       await fs.rm(inside(node.file), { force: true })
     }
 
     // 画布存档最后写 —— 它相当于提交。
     await fs.writeFile(path.join(root, CANVAS_FILE), JSON.stringify(canvas, null, 2), 'utf8')
-  }
-
-  // 逐块解码：UTF-8 优先，块里出现替换字符时按 GBK 重来（cmd 内建消息走的是 OEM 代码页）。
-  // stream: true 会把块尾截断的多字节字符留到下一块，不会被当成坏编码。
-  function createDecoder() {
-    const utf8 = new TextDecoder('utf8')
-    return (chunk) => {
-      if (!chunk?.length) return ''
-      const text = utf8.decode(chunk, { stream: true })
-      if (!text.includes('\ufffd')) return text
-      try {
-        return new TextDecoder('gbk').decode(chunk)
-      } catch {
-        return text
-      }
-    }
-  }
-
-  function kill(child) {
-    if (child.exitCode !== null || child.signalCode) return
-    if (!IS_WINDOWS) {
-      child.kill()
-      return
-    }
-    // windows 上 kill 只杀 shell，命令自己的子进程会漏下来，连整棵树一起收
-    try {
-      spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' }).unref()
-    } catch {
-      child.kill()
-    }
   }
 
   // 设置文件是外来的（手改、旧版本、写坏了）：范围外夹住，不是数就用默认。
@@ -231,7 +191,7 @@ export function createApi(initialRoot) {
   function checkShell(value) {
     const wanted = String(value ?? '').trim().toLowerCase()
     if (!wanted) return ''
-    if (!SHELLS[wanted]) throw new Error(`不认识的行命令行：${value}（可填 ${Object.keys(SHELLS).join(' / ')}）`)
+    if (!shellNames().includes(wanted)) throw new Error(`不认识的行命令行：${value}（可填 ${shellNames().join(' / ')}）`)
     return wanted
   }
 
@@ -271,74 +231,6 @@ export function createApi(initialRoot) {
     return target
   }
 
-  // 运行命令：边跑边把输出按 NDJSON 行推给前端，最后一行是终止信息。
-  // options 是这台机器上的设置：用哪个命令行、最多跑多久、输出最多收多少。
-  function run(command, cwd, res, options) {
-    let launch
-    try {
-      launch = shellOf(options.shell, command)
-    } catch (error) {
-      return send(res, 400, { error: error.message }) // 还没推流，报得成 JSON
-    }
-    res.writeHead(200, {
-      'content-type': 'application/x-ndjson; charset=utf-8',
-      'cache-control': 'no-store',
-    })
-    const emit = (line) => res.write(`${JSON.stringify(line)}\n`)
-    const done = (line) => {
-      emit(line)
-      res.end()
-    }
-
-    if (!root) return done({ type: 'exit', code: 1, failed: true, output: '还没有工作文件夹' })
-
-    const child = spawn(launch.file, launch.args, { cwd, windowsHide: true, windowsVerbatimArguments: launch.verbatim })
-    child.stdin.end() // 给子进程一个 EOF：不关 stdin 时，会读 stdin 的命令（如 pi -p）会一直挂到超时
-
-    const decode = createDecoder()
-    let bytes = 0
-    let truncated = false
-    let timedOut = false
-    let settled = false
-
-    const timer = setTimeout(() => {
-      timedOut = true
-      kill(child)
-    }, options.timeout * 1000)
-
-    function onData(chunk) {
-      if (truncated) return
-      const room = options.outputLimit - bytes
-      bytes += chunk.length
-      if (chunk.length > room) {
-        // 超上限：切掉多出来的部分，但**不杀进程** —— 杀掉等于把 agent 的活白干了。
-        // 之后还往外写的一律丢掉，等它自己跑完；节点上会标「输出被截断」。
-        truncated = true
-        if (room > 0) emit({ type: 'chunk', data: decode(chunk.subarray(0, room)) })
-        return
-      }
-      emit({ type: 'chunk', data: decode(chunk) })
-    }
-    child.stdout.on('data', onData)
-    child.stderr.on('data', onData)
-
-    function close(extra) {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      done(extra)
-    }
-
-    child.on('error', (error) => close({ type: 'exit', code: 1, failed: true, output: error.message }))
-    child.on('close', (code) => {
-      const exit = typeof code === 'number' ? code : 1
-      close({ type: 'exit', code: exit, failed: exit !== 0 || timedOut || truncated, timedOut, truncated })
-    })
-    res.on('close', () => {
-      if (!settled) kill(child)
-    })
-  }
-
   async function readBody(req) {
     const chunks = []
     let size = 0
@@ -360,8 +252,8 @@ export function createApi(initialRoot) {
     if (!req.url?.startsWith('/api/')) return next()
     const route = req.url.split('?')[0]
     try {
-      if (req.method !== 'POST') throw new Error('只接受 POST')
-      const body = await readBody(req)
+      if (req.method !== 'POST' && !route.endsWith('/events')) throw new Error('只接受 POST')
+      const body = req.method === 'POST' ? await readBody(req) : {}
       if (route === '/api/workspace') return send(res, 200, await setWorkspace(body.path, body.mode))
       if (route === '/api/recent') return send(res, 200, { items: await readRecent() })
       // 不传 cwd 是读，传了（哪怕是空串）就是写
@@ -380,7 +272,7 @@ export function createApi(initialRoot) {
           if (typeof value === 'string' || typeof value === 'boolean' || Number.isFinite(value)) patch[key] = value
         }
         // shells 是给界面摆下拉用的，认哪些名字是后端的事；它只是个回参，不进存档。
-        const answer = (settings) => send(res, 200, { ...settings, shells: Object.keys(SHELLS) })
+        const answer = (settings) => send(res, 200, { ...settings, shells: shellNames() })
         if (!Object.keys(patch).length) return answer(await readSettings())
         return answer(await writeSettings(patch))
       }
@@ -389,9 +281,27 @@ export function createApi(initialRoot) {
         await save(body)
         return send(res, 200, { ok: true })
       }
-      if (route === '/api/exec') {
-        const { shell, timeout, outputLimitKb } = await readSettings()
-        return run(String(body.command ?? ''), await resolveCwd(body.cwd), res, { shell, timeout, outputLimit: outputLimitKb * 1024 })
+      if (route === '/api/runs') return send(res, 200, { items: runner.list() })
+      if (route === '/api/run') return send(res, 200, await runner.start({ id: body.id, mode: body.mode }))
+      if (route.startsWith('/api/run/') && route.endsWith('/stop')) {
+        return send(res, 200, runner.stop(route.slice('/api/run/'.length, -'/stop'.length)))
+      }
+      // 一次运行的事件流：NDJSON 一行一件事，最后一行是 end。
+      if (route.startsWith('/api/run/') && route.endsWith('/events')) {
+        const runId = route.slice('/api/run/'.length, -'/events'.length)
+        if (!runner.has(runId)) throw new Error(`没有这次运行：${runId}`) // 还没开流，报得成 JSON
+        res.writeHead(200, {
+          'content-type': 'application/x-ndjson; charset=utf-8',
+          'cache-control': 'no-store',
+        })
+        const send = (event) => {
+          res.write(`${JSON.stringify(event)}\n`)
+          if (event.t === 'end') res.end()
+        }
+        // 订阅断了不代表不跑了：链在后端自己走完（ADR-0009），网页再打开时还能接上
+        const detach = runner.attach(runId, send)
+        res.on('close', () => detach?.())
+        return
       }
       throw new Error(`未知接口：${route}`)
     } catch (error) {

@@ -20,8 +20,8 @@ export function mountToolbar({ getState, actions }) {
   const SETTINGS_HINT = '命令行、超时、输出上限、界面手感 —— 跟这台机器走，不进画布存档'
 
   function render(state) {
-    // 有命令在跑、或者有一条链正在走，它就露头。跑的是哪些节点，节点自己脚上写着
-    stop.hidden = !state.running.size && !state.chain
+    // 有命令在跑、或者后端还有链在走，它就露头。跑的是哪些节点，节点自己脚上写着
+    stop.hidden = !state.running.size && !state.runs.size
     dot.classList.toggle('saving', state.saving)
     dot.title = state.saving ? '正在落盘…' : '改动即落盘'
     zoom.textContent = `${Math.round(state.view.scale * 100)}%`

@@ -41,14 +41,19 @@ function resultsOf(graph) {
   const results = {}
   for (const node of graph.nodes) {
     if (!runnable(node) || !node.result) continue
-    const { code, failed, timedOut, truncated, at, elapsed, command } = node.result
-    // 提取节点不 spawn 进程，没有退出码可报，只记时间
-    results[node.id] =
-      node.kind === 'extract'
-        ? { at, elapsed }
-        : { code, failed: Boolean(failed), timedOut: Boolean(timedOut), truncated: Boolean(truncated), at, elapsed, command }
+    results[node.id] = resultMeta(node)
   }
   return results
+}
+
+// 一个会跑的节点存进存档的那点元信息。裸输出不进存档（它在缓存文件里）。
+// 前端的整包落盘和后端跑完的补写（server/runner.mjs）都得是同一个口径，所以放这儿共用。
+export function resultMeta(node) {
+  const { code, failed, timedOut, truncated, at, elapsed, command } = node.result
+  // 提取节点不 spawn 进程，没有退出码可报，只记时间
+  return node.kind === 'extract'
+    ? { at, elapsed }
+    : { code, failed: Boolean(failed), timedOut: Boolean(timedOut), truncated: Boolean(truncated), at, elapsed, command }
 }
 
 // 校验并还原：不认识的结构直接报错，能救的地方（尺寸过小、悬空的边）就地修掉。
