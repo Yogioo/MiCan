@@ -289,7 +289,11 @@ function runDirOf(node) {
 // 全局运行目录：所有命令节点的默认值，节点自己设了就不看它。
 async function setGlobalRunDir() {
   const current = state.settings.cwd
-  const dir = await askRunDir({ initial: current, hint: '所有命令节点的默认运行目录；留空就用工作文件夹' })
+  const dir = await askRunDir({
+    initial: current,
+    hint: '所有命令节点的默认运行目录；留空就用工作文件夹',
+    quick: [{ label: '工作文件夹', value: '', hint: state.workspace ?? '还没打开工作文件夹' }],
+  })
   if (dir === null || dir === current) return
   try {
     const data = await api('/api/settings', { cwd: dir })
@@ -300,13 +304,18 @@ async function setGlobalRunDir() {
   }
 }
 
-// 单个节点的运行目录：设了就覆盖全局，清空就退回全局。
+// 单个节点的运行目录：设了就覆盖全局，清空就退回全局；也可以一步点名要工作文件夹。
 async function setRunDir(id) {
   const node = findNode(state.graph, id)
   if (!node || node.kind !== 'command') return
   const dir = await askRunDir({
     initial: node.cwd ?? '',
-    hint: `命令在这台机器上的绝对路径；留空就跟随全局（${state.settings.cwd || '工作文件夹'}）`,
+    hint: `相对工作文件夹的路径（“.” 就是工作文件夹），或这台机器上的绝对路径；留空就跟随全局（${state.settings.cwd || '工作文件夹'}）`,
+    placeholder: '相对工作文件夹，如 . 或 ./sub；或绝对路径',
+    quick: [
+      { label: '工作文件夹', value: '.', hint: state.workspace ?? '还没打开工作文件夹' },
+      { label: '跟随全局', value: '', hint: state.settings.cwd || '全局没设，就是工作文件夹' },
+    ],
   })
   if (dir === null || dir === (node.cwd ?? '')) return
   update((draft) => setNodeCwd(draft.graph, id, dir))

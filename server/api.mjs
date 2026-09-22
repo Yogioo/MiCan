@@ -142,7 +142,7 @@ export function createApi(initialRoot) {
     return next
   }
 
-  // 运行目录只收本机绝对路径：空串算没设，剩下的一律 path.resolve 成绝对路径。
+  // 全局运行目录只收本机绝对路径：空串算没设，剩下的一律 path.resolve 成绝对路径。
   function requireAbsolute(value) {
     const wanted = String(value ?? '').trim()
     if (!wanted) return ''
@@ -150,10 +150,12 @@ export function createApi(initialRoot) {
     return path.resolve(wanted)
   }
 
-  // 命令的运行目录：空就是工作文件夹，给了就必须是本机上一个真实存在的文件夹。
+  // 命令的运行目录：空就是工作文件夹；相对路径按工作文件夹算（“.” 就是它自己）；
+  // 绝对路径按本机路径。落地的必须是一个真实存在的文件夹。
   async function resolveCwd(cwd) {
-    const target = requireAbsolute(cwd)
-    if (!target) return root
+    const wanted = String(cwd ?? '').trim()
+    if (!wanted || !root) return root
+    const target = path.isAbsolute(wanted) ? path.resolve(wanted) : path.resolve(root, wanted)
     if (!(await fs.stat(target).catch(() => null))?.isDirectory()) throw new Error(`运行目录不存在：${target}`)
     return target
   }

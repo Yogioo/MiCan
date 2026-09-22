@@ -641,6 +641,15 @@ body.space-ready #viewport {
   align-items: center;
 }
 
+/* 运行目录弹窗里的快捷选择：点一下就是这个目录，不用再找路径 */
+.modal-quick {
+  flex-wrap: wrap;
+}
+
+.modal-quick button {
+  border-style: dashed;
+}
+
 .modal-path {
   flex: 1;
   min-width: 0;

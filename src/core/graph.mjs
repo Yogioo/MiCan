@@ -41,7 +41,8 @@ export function setNodeCommand(graph, id, command) {
   node.command = command
 }
 
-// 运行目录：空串表示跟随工作文件夹，否则是这台机器上的绝对路径。
+// 运行目录：空串表示跟着上一层（全局，再到工作文件夹）；相对路径相对工作文件夹（“.” 就是工作文件夹），
+// 其余按本机绝对路径算。
 export function setNodeCwd(graph, id, cwd) {
   const node = findNode(graph, id)
   if (!node) return

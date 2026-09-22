@@ -208,7 +208,8 @@ export function askWorkspace({ mode, initial = '', recent = [], error = '' }) {
 }
 
 // 问一个运行目录（全局的、单个命令节点的都走它）：空串表示用回上一层默认，取消给 null。
-export function askRunDir({ initial = '', hint = '' } = {}) {
+// quick 是几个一步到位的选择（{ label, value, hint }）：点一下就是这个值，不用再打路径。
+export function askRunDir({ initial = '', hint = '', quick = [], placeholder = '绝对路径，例如 D:\\work\\demo' } = {}) {
   const modal = openModal({ title: '运行目录', okText: '确定' })
   const label = document.createElement('div')
   label.className = 'modal-label'
@@ -220,11 +221,24 @@ export function askRunDir({ initial = '', hint = '' } = {}) {
   input.className = 'modal-path'
   input.type = 'text'
   input.spellcheck = false
-  input.placeholder = '绝对路径，例如 D:\\work\\demo'
+  input.placeholder = placeholder
   input.value = initial
   const { browseButton, browser } = attachBrowser(modal, input)
   row.append(input, browseButton)
-  modal.body.append(label, row, browser)
+
+  if (quick.length) {
+    const shortcuts = document.createElement('div')
+    shortcuts.className = 'modal-row modal-quick'
+    for (const item of quick) {
+      const choose = button('', item.label)
+      choose.title = item.hint ?? ''
+      choose.addEventListener('click', () => modal.finish(item.value))
+      shortcuts.append(choose)
+    }
+    modal.body.append(label, shortcuts, row, browser)
+  } else {
+    modal.body.append(label, row, browser)
+  }
 
   const submit = () => modal.finish(input.value.trim())
   input.addEventListener('keydown', (event) => {

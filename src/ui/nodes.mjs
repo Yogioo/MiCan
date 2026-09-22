@@ -5,6 +5,9 @@ import { renderMarkdown } from './markdown.mjs'
 
 const DRAG_THRESHOLD = 4 // 屏幕像素：移动超过它才算拖动，否则算点击选中
 
+// 本机绝对路径：盘符（C:\、C:/）、UNC（\\server）、或 / 开头；其余当相对工作文件夹
+const isAbsolutePath = (value) => /^(?:[a-zA-Z]:[\\/]|[\\/])/.test(value)
+
 const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
 
 export function mountNodes({ getState, update, onConnectStart, onRunCommand, onNewCommandNode, onSetRunDir }) {
@@ -60,9 +63,11 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     const cmd = el.querySelector('.node-cmd')
     if (cmd.textContent !== node.command) cmd.textContent = node.command
     // 命令里有 {{变量}} 时节点上留的是模板；鼠标停上去看实际跑了哪条、在哪个目录跑
-    const runDir = node.cwd || state.settings.cwd || '' // 节点自己的覆盖全局；都没有就跟着工作文件夹
+    const own = node.cwd // 节点自己写的：相对工作文件夹，或本机绝对路径
+    const runDir = own || state.settings.cwd || ''
     const notes = []
-    if (runDir) notes.push(`运行目录：${runDir}${node.cwd ? '（节点自己设的）' : '（全局）'}`)
+    if (own) notes.push(`运行目录：${own}（${isAbsolutePath(own) ? '本机绝对路径' : '相对工作文件夹'}）`)
+    else if (runDir) notes.push(`运行目录：${runDir}（全局）`)
     const resolved = node.result?.command
     if (resolved && resolved !== node.command) notes.push(`实际执行：${resolved}`)
     cmd.title = notes.join('\n')
@@ -83,7 +88,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     body.classList.toggle('need-cmd', !node.command) // 还没写命令时，占位文字改成提示怎么填
     el.classList.toggle('running', running)
     // 设了运行目录（全局或节点）就在脚上带出来，不然跑完就忘了
-    const foot = [running ? `运行中 · ${seconds(Date.now() - state.running.get(node.id))}` : describeResult(node.result), runDir && `@ ${runDir}`]
+    const at = own === '.' ? '工作文件夹' : own || runDir
+    const foot = [running ? `运行中 · ${seconds(Date.now() - state.running.get(node.id))}` : describeResult(node.result), at && `@ ${at}`]
     el.querySelector('.node-foot').textContent = foot.filter(Boolean).join(' · ')
   }
 
