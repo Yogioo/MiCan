@@ -1,7 +1,6 @@
 // 画布：平移、缩放、点阵背景。
+import { machine } from '../core/settings.mjs'
 import { cssTransform, gridMetrics, panBy, toWorld, zoomAt } from '../core/view.mjs'
-
-const ZOOM_SENSITIVITY = 0.0015
 
 export function mountCanvas({ getView, setView, subscribe, onBackgroundPress, onBackgroundDblClick, onResetZoom }) {
   const viewport = document.getElementById('viewport')
@@ -21,7 +20,7 @@ export function mountCanvas({ getView, setView, subscribe, onBackgroundPress, on
     'wheel',
     (event) => {
       event.preventDefault()
-      const factor = Math.exp(-event.deltaY * ZOOM_SENSITIVITY)
+      const factor = Math.exp(-event.deltaY * machine.zoomSensitivity)
       setView(zoomAt(getView(), event.clientX, event.clientY, factor))
     },
     { passive: false },

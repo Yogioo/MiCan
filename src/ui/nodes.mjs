@@ -1,16 +1,15 @@
-// 节点层：渲染两类节点，处理拖动、缩放、选中、编辑、右键菜单。
-import { execIn, moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeCwd, setNodeFile, setNodeText } from '../core/graph.mjs'
+// 节点层：渲染三类节点，处理拖动、缩放、选中、编辑、右键菜单。
+import { execIn, moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeCwd, setNodeFile, setNodePick, setNodeText } from '../core/graph.mjs'
+import { canvas, machine } from '../core/settings.mjs'
 import { toWorld } from '../core/view.mjs'
 import { renderMarkdown } from './markdown.mjs'
-
-const DRAG_THRESHOLD = 4 // 屏幕像素：移动超过它才算拖动，否则算点击选中
 
 // 本机绝对路径：盘符（C:\、C:/）、UNC（\\server）、或 / 开头；其余当相对工作文件夹
 const isAbsolutePath = (value) => /^(?:[a-zA-Z]:[\\/]|[\\/])/.test(value)
 
 const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
 
-export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onToggleEntry, onNewCommandNode, onSetRunDir }) {
+export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onToggleEntry, onNewCommandNode, onNewExtractNode, onSetRunDir }) {
   const layer = document.getElementById('nodes')
   const viewport = document.getElementById('viewport')
   const elements = new Map()
@@ -31,8 +30,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       el.style.height = `${node.h}px`
       el.classList.toggle('selected', state.selection?.id === node.id)
       // 编辑中的节点正文归输入框管，这里不碰
-      if (node.kind === 'command') renderCommand(el, node, state)
-      else renderText(el, node)
+      if (node.kind === 'text') renderText(el, node)
+      else if (node.kind === 'extract') renderExtract(el, node)
+      else renderCommand(el, node, state)
     }
     for (const [id, el] of elements) {
       if (alive.has(id)) continue
@@ -64,7 +64,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     if (cmd.textContent !== node.command) cmd.textContent = node.command
     // 命令里有 {{变量}} / [[变量]] 时节点上留的是模板；鼠标停上去看实际跑了哪条、在哪个目录跑
     const own = node.cwd // 节点自己写的：相对工作文件夹，或本机绝对路径
-    const runDir = own || state.settings.cwd || ''
+    const runDir = own || canvas.cwd || ''
     const notes = []
     if (own) notes.push(`运行目录：${own}（${isAbsolutePath(own) ? '本机绝对路径' : '相对工作文件夹'}）`)
     else if (runDir) notes.push(`运行目录：${runDir}（全局）`)
@@ -112,19 +112,42 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     return [...parts, time].join(' · ')
   }
 
-  // 连接点：命令节点两个（执行在上、数据在下），文本节点一个。从哪个点拉出去就是哪一种边。
-  const COMMAND_PORTS =
-    '<div class="node-port port-exec" data-kind="exec" title="执行端口：连下一个命令节点"></div>' +
-    '<div class="node-port port-data" data-kind="data" title="数据端口：连文本节点或命令节点"></div>'
-  const TEXT_PORT = '<div class="node-port port-data" data-kind="data" title="数据端口：把正文喂给命令节点"></div>'
+  // 提取节点：顶上一条取法（跟命令条同位），中间是取出来的值，底部一条时间。
+  // 它不跑进程，所以没有退出码、没有运行中、也没有入口。
+  function renderExtract(el, node) {
+    const spec = node.pick ?? ''
+    const bar = el.querySelector('.node-cmd')
+    if (bar.textContent !== spec) bar.textContent = spec
+    bar.title = spec ? `取法：${spec}` : '双击填写取法，如 json:isFull'
+
+    const content = node.result?.output ?? ''
+    const body = el.querySelector('.node-body')
+    if (el._content !== content || el._failed !== false) {
+      body.textContent = content
+      body.classList.toggle('empty', !content)
+      el._content = content
+      el._failed = false
+    }
+    body.classList.toggle('need-cmd', !spec) // 还没填取法时，占位文字改成提示怎么填
+    el.classList.toggle('running', false)
+    el.classList.toggle('is-entry', false) // 提取节点当不了入口
+    const at = node.result ? new Date(node.result.at).toTimeString().slice(0, 8) : ''
+    el.querySelector('.node-foot').textContent = at ? `取值 · ${at}` : ''
+  }
+
+  // 连接点：会跑的节点两个（执行在上、数据在下），文本节点一个。从哪个点拉出去就是哪一种边。
+  const RUN_PORTS =
+    '<div class="node-port port-exec" data-kind="exec" title="执行端口：连下一个会跑的节点"></div>' +
+    '<div class="node-port port-data" data-kind="data" title="数据端口：连文本节点或会跑的节点"></div>'
+  const TEXT_PORT = '<div class="node-port port-data" data-kind="data" title="数据端口：把正文喂给会跑的节点"></div>'
 
   function createElement(node) {
     const el = document.createElement('div')
     el.className = `node kind-${node.kind}`
     el.innerHTML =
-      node.kind === 'command'
-        ? `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${COMMAND_PORTS}<div class="node-handle"></div>`
-        : `<div class="node-title"><span class="node-file"></span></div><div class="node-body"></div>${TEXT_PORT}<div class="node-handle"></div>`
+      node.kind === 'text'
+        ? `<div class="node-title"><span class="node-file"></span></div><div class="node-body"></div>${TEXT_PORT}<div class="node-handle"></div>`
+        : `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
     el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('dblclick', (event) => {
       event.stopPropagation()
@@ -134,6 +157,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       if (current.kind === 'command') {
         // 编辑命令用的是整个正文区（够大），上面的命令条先让开
         beginBodyEdit(el, current.command, (value) => update((state) => setNodeCommand(state.graph, current.id, value)), el.querySelector('.node-cmd'))
+      } else if (current.kind === 'extract') {
+        // 取法跟命令一样：也是整个正文区当编辑面，上面的取法条先让开
+        beginBodyEdit(el, current.pick ?? '', (value) => update((state) => setNodePick(state.graph, current.id, value)), el.querySelector('.node-cmd'))
       } else {
         beginBodyEdit(el, current.text, (value) => update((state) => setNodeText(state.graph, current.id, value)))
       }
@@ -259,7 +285,10 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
 
     if (!nodeEl) {
       const world = toWorld(getState().view, event.clientX, event.clientY)
-      openMenu(event.clientX, event.clientY, [{ label: '新建命令节点', run: () => onNewCommandNode(world) }])
+      openMenu(event.clientX, event.clientY, [
+        { label: '新建命令节点', run: () => onNewCommandNode(world) },
+        { label: '新建提取节点', run: () => onNewExtractNode(world) },
+      ])
       return
     }
 
@@ -275,6 +304,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       if (head) items.push({ label: '取消入口', run: () => onToggleEntry(node.id) })
       else if (!chained) items.push({ label: '设为入口', run: () => onToggleEntry(node.id) })
       items.push({ label: '设置运行目录…', run: () => onSetRunDir(node.id) })
+    } else if (node.kind === 'extract') {
+      // 提取节点没进程可跑，能做的只有「按现在的值重新取一次」
+      items.push({ label: '运行提取', run: () => onRunCommand(node.id) })
     } else {
       items.push({ label: '重命名文件', run: () => beginFileEdit(nodeEl, node) })
     }
@@ -322,7 +354,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     function onMove(moveEvent) {
       const dx = moveEvent.clientX - origin.px
       const dy = moveEvent.clientY - origin.py
-      if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) return
+      if (!moved && Math.hypot(dx, dy) < machine.dragThreshold) return
       moved = true
       const { scale } = getState().view
       if (handle) {

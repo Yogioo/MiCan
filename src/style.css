@@ -374,8 +374,9 @@ body.space-ready #viewport {
   user-select: text;
 }
 
-/* 命令节点：顶部一条命令（常驻，不被输出盖住），底部一条状态，中间是输出 */
-.node.kind-command .node-cmd {
+/* 会跑的节点：顶部一条主线（常驻，不被输出盖住），底部一条状态，中间是输出 */
+.node.kind-command .node-cmd,
+.node.kind-extract .node-cmd {
   position: absolute;
   top: 0;
   right: 0;
@@ -400,7 +401,18 @@ body.space-ready #viewport {
   color: #c6c6c0;
 }
 
-.node.kind-command .node-body {
+/* 提取节点：顶上写的是取法，底色跟命令节点分得开 */
+.node.kind-extract .node-cmd {
+  background: #fbf7ee;
+}
+
+.node.kind-extract .node-cmd::before {
+  content: '取法 ';
+  color: #c9bda2;
+}
+
+.node.kind-command .node-body,
+.node.kind-extract .node-body {
   top: 26px;
   bottom: 24px;
   padding-top: 10px;
@@ -415,8 +427,16 @@ body.space-ready #viewport {
   content: '还没有输出';
 }
 
+.node.kind-extract .node-body.empty::before {
+  content: '还没有取过值';
+}
+
 .node.kind-command .node-body.empty.need-cmd::before {
   content: '双击填写命令';
+}
+
+.node.kind-extract .node-body.empty.need-cmd::before {
+  content: '双击填写取法，如 json:isFull';
 }
 
 .node.kind-command .node-body.failed {
@@ -651,6 +671,11 @@ body.space-ready #viewport {
   font-size: 12px;
 }
 
+/* 设置窗口项多，给它宽一点，好摆「名字 — 控件 — 说明」三栏 */
+.modal.wide {
+  width: min(720px, calc(100vw - 48px));
+}
+
 .modal-title {
   font-size: 13px;
   font-weight: 600;
@@ -698,6 +723,125 @@ body.space-ready #viewport {
 .modal button:focus-visible {
   outline: 2px solid #c9d8ef;
   outline-offset: 0;
+}
+
+/* 设置窗口：一行 = 名字 + 控件（带单位） + 说明；一列一列对齐，免得看成一片数字 */
+.set-layer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.set-layer + .set-layer {
+  margin-top: 6px;
+  padding-top: 10px;
+  border-top: 1px solid #efefe9;
+}
+
+.set-layer-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.set-layer-note {
+  color: #a3a39d;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.set-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.set-group-name {
+  color: #7b7b74;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.set-row {
+  display: grid;
+  grid-template-columns: 122px 168px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.set-row input,
+.set-row select {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid #e4e4df;
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+
+.set-name {
+  color: #4a4a45;
+}
+
+.set-control {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.set-unit,
+.set-note {
+  color: #a3a39d;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.set-unit {
+  white-space: nowrap;
+}
+
+/* 路径那一行：浏览面板撑满整行 */
+.set-row .modal-browser {
+  grid-column: 1 / -1;
+}
+
+.set-row .modal-browse {
+  white-space: nowrap;
+}
+
+.set-more {
+  margin-top: 8px;
+}
+
+.set-more summary {
+  color: #7b7b74;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.set-more-body {
+  padding-left: 8px;
+  border-left: 2px solid #f0f0ec;
+}
+
+.set-restore {
+  align-self: flex-start;
+  margin-top: 6px;
+  color: #7b7b74;
+  font-size: 11px;
+}
+
+.modal-check {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: #4a4a45;
+}
+
+.modal-check input {
+  margin: 0;
 }
 
 .modal button {

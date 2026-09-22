@@ -1,16 +1,20 @@
-// 工具条：落盘状态、另存为、打开、运行目录、回 100%、工作文件夹、当前缩放比。
+// 工具条：落盘状态、另存为、打开、设置、回 100%、工作文件夹、当前缩放比。
 // 没有「保存」按钮：改动一结束就落盘了（ADR-0003），那个点只表示「有写还在路上」。
+import { canvas, machine } from '../core/settings.mjs'
+
 export function mountToolbar({ getState, actions }) {
   const dot = document.getElementById('save-dot')
   const zoom = document.getElementById('zoom-value')
   const message = document.getElementById('toolbar-message')
   const workspace = document.getElementById('workspace-path')
-  const runDir = document.getElementById('btn-rundir')
+  const settings = document.getElementById('btn-settings')
 
   document.getElementById('btn-save-as').addEventListener('click', actions.saveAs)
   document.getElementById('btn-open').addEventListener('click', actions.openWorkspace)
-  document.getElementById('btn-rundir').addEventListener('click', actions.setGlobalRunDir)
+  settings.addEventListener('click', actions.openSettings)
   document.getElementById('btn-reset').addEventListener('click', actions.resetZoom)
+
+  const SETTINGS_HINT = '命令行、超时、输出上限、界面手感 —— 跟这台机器走，不进画布存档'
 
   function render(state) {
     dot.classList.toggle('saving', state.saving)
@@ -19,9 +23,12 @@ export function mountToolbar({ getState, actions }) {
     message.textContent = state.message
     workspace.textContent = state.workspace ?? '未打开工作文件夹'
     workspace.title = state.workspace ?? ''
-    const cwd = state.settings.cwd
-    runDir.classList.toggle('set', Boolean(cwd))
-    runDir.title = cwd ? `全局运行目录：${cwd}` : '全局运行目录：跟随工作文件夹'
+    // 设置里的值不再铺在工具条上，但「改过没有」一眼看得出来：改过就把按钮点亮，鼠标停上去看是哪些
+    const changed = []
+    if (machine.shell) changed.push(`命令行 ${machine.shell}`)
+    if (canvas.cwd) changed.push(`运行目录 ${canvas.cwd}`)
+    settings.classList.toggle('set', changed.length > 0)
+    settings.title = changed.length ? `设置：${changed.join('；')}` : SETTINGS_HINT
   }
 
   return { render }

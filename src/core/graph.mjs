@@ -1,9 +1,5 @@
 // 图：节点与边的纯数据操作，不碰 DOM。
-
-export const NODE_DEFAULT_W = 320
-export const NODE_DEFAULT_H = 200
-export const NODE_MIN_W = 160
-export const NODE_MIN_H = 80
+import { machine } from './settings.mjs'
 
 let seq = 0
 
@@ -16,11 +12,16 @@ export function createGraph() {
   return { nodes: [], edges: [] }
 }
 
-export function createNode({ kind = 'text', x = 0, y = 0, w = NODE_DEFAULT_W, h = NODE_DEFAULT_H, text = '', command = '', cwd = '', file = '', entry = false } = {}) {
+export function createNode({ kind = 'text', x = 0, y = 0, w = machine.nodeDefaultW, h = machine.nodeDefaultH, text = '', command = '', cwd = '', file = '', entry = false, pick = '' } = {}) {
   const id = newId('n')
   if (kind === 'command') return { id, kind, x, y, w, h, command, cwd, entry }
+  if (kind === 'extract') return { id, kind, x, y, w, h, pick }
   return { id, kind: 'text', x, y, w, h, file: file || `docs/${id}.md`, text }
 }
+
+// 会跑的节点：命令节点跑命令，提取节点算它的值。两者都能进链，都有值和缓存文件。
+// 判断「是不是会跑的节点」都走这里，别到处写 kind === 'command'。
+export const runnable = (node) => node?.kind === 'command' || node?.kind === 'extract'
 
 // 文件名的唯一入口：只留一个文件名，补上 .md，其余（路径分隔符、前导点）挡掉。
 export function normalizeFileName(name) {
@@ -39,6 +40,13 @@ export function setNodeCommand(graph, id, command) {
   const node = findNode(graph, id)
   if (!node) return
   node.command = command
+}
+
+// 取法：`json:isFull` 这样一段文本。解析是 pick.mjs 的事，这里只存。
+export function setNodePick(graph, id, pick) {
+  const node = findNode(graph, id)
+  if (!node) return
+  node.pick = pick
 }
 
 // 运行目录：空串表示跟着上一层（全局，再到工作文件夹）；相对路径相对工作文件夹（“.” 就是工作文件夹），
@@ -69,8 +77,8 @@ export function moveNode(graph, id, x, y) {
 export function resizeNode(graph, id, w, h) {
   const node = findNode(graph, id)
   if (!node) return
-  node.w = Math.max(NODE_MIN_W, w)
-  node.h = Math.max(NODE_MIN_H, h)
+  node.w = Math.max(machine.nodeMinW, w)
+  node.h = Math.max(machine.nodeMinH, h)
 }
 
 export function setNodeText(graph, id, text) {
@@ -90,13 +98,14 @@ export function findEdge(graph, id) {
 const pick = (graph, id, field, kind) =>
   graph.edges.filter((edge) => edge.kind === kind && edge[field] === id)
 
-// 执行边在两头都是单连接，所以这几个只需要找第一条。
+// 执行边在两头都不限根数：入边多根没有歧义（走路时光标只有一个），
+// 出边多根靠标签分路。所以这两个都只需要找第一条 / 全部。
 export function execIn(graph, id) {
   return pick(graph, id, 'to', 'exec')[0] ?? null
 }
 
-export function execOut(graph, id) {
-  return pick(graph, id, 'from', 'exec')[0] ?? null
+export function execOutAll(graph, id) {
+  return pick(graph, id, 'from', 'exec')
 }
 
 export function dataInto(graph, id) {
@@ -105,18 +114,6 @@ export function dataInto(graph, id) {
 
 export function dataOut(graph, id) {
   return pick(graph, id, 'from', 'data')
-}
-
-// 顺着执行边能不能从 start 走到 target。执行边两头单连接，所以这是一条直线。
-function reaches(graph, start, target) {
-  const seen = new Set()
-  let cursor = start
-  while (cursor && !seen.has(cursor)) {
-    if (cursor === target) return true
-    seen.add(cursor)
-    cursor = execOut(graph, cursor)?.to ?? null
-  }
-  return false
 }
 
 // 这条边能不能建：能就返回 null，不能就返回一句话当理由（界面直接拿去提示）。
@@ -134,11 +131,13 @@ export function connectProblem(graph, from, to, kind) {
   if (kind === 'data') return null
   if (kind !== 'exec') return `不认识的边：${kind}`
 
-  if (source.kind !== 'command' || target.kind !== 'command') return '执行边只能连两个命令节点'
+  if (!runnable(source) || !runnable(target)) return '执行边只能连会跑的节点（命令节点或提取节点）'
   if (target.entry) return '它已经是入口了，起点头上接不了执行边'
-  if (execIn(graph, to)) return '它的执行输入已经有一条边了'
-  if (execOut(graph, from)) return '它的执行输出已经有一条边了'
-  if (reaches(graph, to, from)) return '这么连会成一个环'
+  // 入边不限根数：走路时光标只有一个，「从哪儿来」永远是确定的，所以多根入边没有歧义。
+  // 而且环的入口节点天生就有两根入边（外面一根、回边一根），卡着就画不出环。
+  // 空标签是兜底，只能有一根，否则「不匹配时走到哪儿」就说不清了。
+  // 出边可以成环（回来指向已经走过的节点），所以这里没有反环检查 —— 兜底靠运行时的步数上限。
+  if (execOutAll(graph, from).some((edge) => !(edge.label ?? ''))) return '它的执行输出已经有一根兜底边了'
   return null
 }
 
@@ -152,6 +151,14 @@ export function addEdge(graph, from, to, kind = 'data') {
 
 export function removeEdge(graph, id) {
   graph.edges = graph.edges.filter((edge) => edge.id !== id)
+}
+
+// 标签撞了能不能写：选路只认第一根匹配的，同一根出边上写重了就会静默走错。
+export function labelProblem(graph, id, label) {
+  const edge = findEdge(graph, id)
+  if (!edge || edge.kind !== 'exec' || !label) return null
+  const clash = execOutAll(graph, edge.from).some((item) => item.id !== id && (item.label ?? '') === label)
+  return clash ? `这个节点已经有一根标签为「${label}」的执行出边了` : null
 }
 
 export function setEdgeLabel(graph, id, label) {

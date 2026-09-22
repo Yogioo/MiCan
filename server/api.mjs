@@ -7,11 +7,38 @@ import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, cacheFile } from '../src/c
 
 const RECENT_FILE = path.join(os.homedir(), '.mican', 'recent.json')
 const SETTINGS_FILE = path.join(os.homedir(), '.mican', 'settings.json')
-const RECENT_MAX = 8
-const EXEC_TIMEOUT_MS = 120_000
-const EXEC_MAX_OUTPUT = 64 * 1024
+// 一个命令节点最多跑多久：agent 干活的节点本来就可能跑很久，默认给 2 小时；超时只是防挂死。
+// 这台机器上一改就生效（存在 ~/.mican/settings.json），上限 24 小时。
+const DEFAULT_TIMEOUT_S = 7200
+const MAX_TIMEOUT_S = 24 * 3600
+// 一个节点的输出上限：默认 1MB。超了就截断（不杀进程）—— 杀掉等于把 agent 的活白干了。
+const DEFAULT_OUTPUT_KB = 1024
+const MAX_OUTPUT_KB = 65536
+const DEFAULT_RECENT_MAX = 8
+const MAX_RECENT_MAX = 50
 const MAX_BODY = 32 * 1024 * 1024
 const IS_WINDOWS = process.platform === 'win32'
+
+// 命令行：设置里存的是名字，这里落成「怎么起它」。名字不认识就报错，不猜。
+// cmd 那条带 chcp：Windows 默认代码页是 GBK，先让子进程尽量说 UTF-8（说不完的 createDecoder 再兜）。
+// 命令整串用双引号裹起来 + windowsVerbatimArguments，这两下缺一不可：
+// 不这么干，命令里的双引号会原样漏给被调程序 —— findstr /c:"yes" 会去找字面量 "yes"，
+// node -e "…" 会收到断成两半的参数。
+const SHELLS = {
+  cmd: (command) => ({ file: 'cmd.exe', args: ['/d', '/s', '/c', `"chcp 65001>nul && ${command}"`], verbatim: true }),
+  sh: (command) => ({ file: '/bin/sh', args: ['-c', command], verbatim: false }),
+  bash: (command) => ({ file: 'bash', args: ['-c', command], verbatim: false }),
+  powershell: (command) => ({ file: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', command], verbatim: false }),
+  pwsh: (command) => ({ file: 'pwsh', args: ['-NoProfile', '-NonInteractive', '-Command', command], verbatim: false }),
+}
+
+// 空串 = 跟这台机器的默认（Windows 上 cmd，其余 sh）
+function shellOf(name, command) {
+  const wanted = String(name ?? '').trim().toLowerCase()
+  const build = SHELLS[wanted || (IS_WINDOWS ? 'cmd' : 'sh')]
+  if (!build) throw new Error(`不认识的行命令行：${name}（可填 ${Object.keys(SHELLS).join(' / ')}）`)
+  return build(command)
+}
 
 export function createApi(initialRoot) {
   let root = initialRoot ? path.resolve(initialRoot) : null
@@ -33,7 +60,7 @@ export function createApi(initialRoot) {
   }
 
   async function remember(dir) {
-    const items = [dir, ...(await readRecent()).filter((item) => item !== dir)].slice(0, RECENT_MAX)
+    const items = [dir, ...(await readRecent()).filter((item) => item !== dir)].slice(0, (await readSettings()).recentMax)
     await fs.mkdir(path.dirname(RECENT_FILE), { recursive: true }).catch(() => {})
     await fs.writeFile(RECENT_FILE, JSON.stringify(items, null, 2), 'utf8').catch(() => {})
     return items
@@ -127,9 +154,11 @@ export function createApi(initialRoot) {
       await fs.rm(path.join(cacheDir, name), { force: true })
     }
 
+    // 只有文本节点才有 md 文件：按 file 存不存在判断，不能按 kind 反推 ——
+    // 会跑的节点（命令、提取）都没有 file，而 previous 是直接读的存档、没校验过。
     const keepDocs = new Set(docs.map((doc) => doc.file))
     for (const node of previous?.nodes ?? []) {
-      if (node.kind === 'command' || keepDocs.has(node.file)) continue
+      if (!node.file || keepDocs.has(node.file)) continue
       await fs.rm(inside(node.file), { force: true })
     }
 
@@ -167,13 +196,27 @@ export function createApi(initialRoot) {
     }
   }
 
-  // 全局设置：跟这台机器走，不进画布存档 —— 运行目录是本机路径，存档得能拿到别的机器上打开。
+  // 设置文件是外来的（手改、旧版本、写坏了）：范围外夹住，不是数就用默认。
+  const clampInt = (value, def, min, max) => (Number.isFinite(value) ? Math.min(Math.max(Math.round(value), min), max) : def)
+
+  // 全局配置：跟这台机器走，不进画布存档 —— 命令行、超时、输出上限都是这台机器上的事。
+  // 后端只认识自己用的那几个；界面手感那些它不认识，原样带着走（免得前端加一项配置就得改后端）。
   async function readSettings() {
     try {
-      const data = JSON.parse(await fs.readFile(SETTINGS_FILE, 'utf8'))
-      return { cwd: typeof data?.cwd === 'string' ? data.cwd : '' }
+      const stored = JSON.parse(await fs.readFile(SETTINGS_FILE, 'utf8'))
+      const data = stored && typeof stored === 'object' ? stored : {}
+      // 运行目录已经搬进存档（ADR-0008）了：清掉旧的全局那份，下一次写设置它就从文件里消失。
+      delete data.cwd
+      return {
+        ...data,
+        shell: typeof data.shell === 'string' ? data.shell : '',
+        timeout: clampInt(data.timeout, DEFAULT_TIMEOUT_S, 1, MAX_TIMEOUT_S),
+        outputLimitKb: clampInt(data.outputLimitKb, DEFAULT_OUTPUT_KB, 1, MAX_OUTPUT_KB),
+        recentMax: clampInt(data.recentMax, DEFAULT_RECENT_MAX, 1, MAX_RECENT_MAX),
+      }
     } catch {
-      return { cwd: '' } // 没设过、或存坏了，都当没设
+      // 没设过、或存坏了，都当没设
+      return { shell: '', timeout: DEFAULT_TIMEOUT_S, outputLimitKb: DEFAULT_OUTPUT_KB, recentMax: DEFAULT_RECENT_MAX }
     }
   }
 
@@ -184,11 +227,37 @@ export function createApi(initialRoot) {
     return next
   }
 
-  // 全局运行目录只收本机绝对路径：空串算没设，剩下的一律 path.resolve 成绝对路径。
-  function requireAbsolute(value) {
+  // 命令行和超时都得是认识的值：报错就退回去让用户重填，不静默改掉他写的字。
+  function checkShell(value) {
+    const wanted = String(value ?? '').trim().toLowerCase()
+    if (!wanted) return ''
+    if (!SHELLS[wanted]) throw new Error(`不认识的行命令行：${value}（可填 ${Object.keys(SHELLS).join(' / ')}）`)
+    return wanted
+  }
+
+  function checkTimeout(value) {
+    const seconds = Math.round(Number(value))
+    if (!Number.isFinite(seconds) || seconds < 1) throw new Error(`超时得是大于 0 的秒数：${value}`)
+    return Math.min(seconds, MAX_TIMEOUT_S)
+  }
+
+  function checkOutputLimit(value) {
+    const kb = Math.round(Number(value))
+    if (!Number.isFinite(kb) || kb < 1) throw new Error(`输出上限得是大于 0 的 KB 数：${value}`)
+    return Math.min(kb, MAX_OUTPUT_KB)
+  }
+
+  function checkRecentMax(value) {
+    const count = Math.round(Number(value))
+    if (!Number.isFinite(count) || count < 1) throw new Error(`最近打开的条数得是大于 0 的整数：${value}`)
+    return Math.min(count, MAX_RECENT_MAX)
+  }
+
+  // 本机路径只收绝对路径；运行目录那一类允许相对工作文件夹的路径，不在后端管（它在存档里，跑的时候才拼）。
+  function requireAbsolute(value, what = '路径') {
     const wanted = String(value ?? '').trim()
     if (!wanted) return ''
-    if (!path.isAbsolute(wanted)) throw new Error(`运行目录要写成绝对路径：${wanted}`)
+    if (!path.isAbsolute(wanted)) throw new Error(`${what}要写成绝对路径：${wanted}`)
     return path.resolve(wanted)
   }
 
@@ -203,7 +272,14 @@ export function createApi(initialRoot) {
   }
 
   // 运行命令：边跑边把输出按 NDJSON 行推给前端，最后一行是终止信息。
-  function run(command, cwd, res) {
+  // options 是这台机器上的设置：用哪个命令行、最多跑多久、输出最多收多少。
+  function run(command, cwd, res, options) {
+    let launch
+    try {
+      launch = shellOf(options.shell, command)
+    } catch (error) {
+      return send(res, 400, { error: error.message }) // 还没推流，报得成 JSON
+    }
     res.writeHead(200, {
       'content-type': 'application/x-ndjson; charset=utf-8',
       'cache-control': 'no-store',
@@ -216,10 +292,7 @@ export function createApi(initialRoot) {
 
     if (!root) return done({ type: 'exit', code: 1, failed: true, output: '还没有工作文件夹' })
 
-    const shell = IS_WINDOWS ? 'cmd.exe' : '/bin/sh'
-    // Windows 默认代码页是 GBK，让子进程尽量说 UTF-8；说不了的下面再兜
-    const args = IS_WINDOWS ? ['/d', '/s', '/c', `chcp 65001>nul && ${command}`] : ['-c', command]
-    const child = spawn(shell, args, { cwd, windowsHide: true })
+    const child = spawn(launch.file, launch.args, { cwd, windowsHide: true, windowsVerbatimArguments: launch.verbatim })
     child.stdin.end() // 给子进程一个 EOF：不关 stdin 时，会读 stdin 的命令（如 pi -p）会一直挂到超时
 
     const decode = createDecoder()
@@ -231,16 +304,17 @@ export function createApi(initialRoot) {
     const timer = setTimeout(() => {
       timedOut = true
       kill(child)
-    }, EXEC_TIMEOUT_MS)
+    }, options.timeout * 1000)
 
     function onData(chunk) {
       if (truncated) return
-      const room = EXEC_MAX_OUTPUT - bytes
+      const room = options.outputLimit - bytes
       bytes += chunk.length
       if (chunk.length > room) {
+        // 超上限：切掉多出来的部分，但**不杀进程** —— 杀掉等于把 agent 的活白干了。
+        // 之后还往外写的一律丢掉，等它自己跑完；节点上会标「输出被截断」。
         truncated = true
         if (room > 0) emit({ type: 'chunk', data: decode(chunk.subarray(0, room)) })
-        kill(child)
         return
       }
       emit({ type: 'chunk', data: decode(chunk) })
@@ -292,15 +366,33 @@ export function createApi(initialRoot) {
       if (route === '/api/recent') return send(res, 200, { items: await readRecent() })
       // 不传 cwd 是读，传了（哪怕是空串）就是写
       if (route === '/api/settings') {
-        if (typeof body.cwd !== 'string') return send(res, 200, await readSettings())
-        return send(res, 200, await writeSettings({ cwd: requireAbsolute(body.cwd) }))
+        // 一个键都没带就是读；带了哪个键就改哪个键（命令行和超时能单独改）
+        const patch = {}
+        if (typeof body.shell === 'string') patch.shell = checkShell(body.shell)
+        if (body.timeout !== undefined) patch.timeout = checkTimeout(body.timeout)
+        if (body.outputLimitKb !== undefined) patch.outputLimitKb = checkOutputLimit(body.outputLimitKb)
+        if (body.recentMax !== undefined) patch.recentMax = checkRecentMax(body.recentMax)
+        if (typeof body.openWorkspace === 'string') patch.openWorkspace = requireAbsolute(body.openWorkspace, '启动时打开的工作文件夹')
+        // 界面上那堆手感值（节点尺寸、缩放范围…）后端不认识，原样存着走 —— 免得前端加一项配置就得改后端。
+        // 只收标量：外来请求里塞对象、数组的一律丢掉。
+        for (const [key, value] of Object.entries(body)) {
+          if (key in patch) continue
+          if (typeof value === 'string' || typeof value === 'boolean' || Number.isFinite(value)) patch[key] = value
+        }
+        // shells 是给界面摆下拉用的，认哪些名字是后端的事；它只是个回参，不进存档。
+        const answer = (settings) => send(res, 200, { ...settings, shells: Object.keys(SHELLS) })
+        if (!Object.keys(patch).length) return answer(await readSettings())
+        return answer(await writeSettings(patch))
       }
       if (route === '/api/browse') return send(res, 200, await browse(body.path))
       if (route === '/api/save') {
         await save(body)
         return send(res, 200, { ok: true })
       }
-      if (route === '/api/exec') return run(String(body.command ?? ''), await resolveCwd(body.cwd), res)
+      if (route === '/api/exec') {
+        const { shell, timeout, outputLimitKb } = await readSettings()
+        return run(String(body.command ?? ''), await resolveCwd(body.cwd), res, { shell, timeout, outputLimit: outputLimitKb * 1024 })
+      }
       throw new Error(`未知接口：${route}`)
     } catch (error) {
       if (res.headersSent) return res.end() // 已经在推流，报不了 JSON 了

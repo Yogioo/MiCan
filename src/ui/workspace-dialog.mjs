@@ -1,6 +1,7 @@
-// 工作文件夹弹窗：路径输入 + 最近打开 + 浏览文件夹，顺带一个「未保存改动」的确认框。
+// 弹窗那一套（骨架、请求、路径选择器）+ 问工作文件夹 / 运行目录。
 // 全部画在页面里 —— 浏览器会拦截 prompt / confirm，或者把它们弹在看不见的地方。
-const request = async (route, body) => {
+// 骨架、请求、attachBrowser 是导出的：设置窗口也用它们，别再写一份。
+export const request = async (route, body) => {
   const response = await fetch(route, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -20,11 +21,11 @@ const button = (className, text) => {
 }
 
 // 弹窗骨架：标题、正文槽、错误行、取消/确定。Esc 与点遮罩都算取消。
-function openModal({ title, okText, cancelText = '取消' }) {
+export function openModal({ title, okText, cancelText = '取消', wide = false }) {
   const mask = document.createElement('div')
   mask.className = 'modal-mask'
   mask.innerHTML =
-    '<div class="modal" role="dialog" aria-modal="true">' +
+    `<div class="modal${wide ? ' wide' : ''}" role="dialog" aria-modal="true">` +
     '<div class="modal-title"></div><div class="modal-body"></div><div class="modal-error"></div>' +
     '<div class="modal-actions"></div></div>'
 
@@ -73,7 +74,7 @@ function listBox(label, className) {
 
 // 路径选择器：一个「浏览…」按钮 + 目录面板（子目录、上一级、盘符），默认收起来不占地方。
 // 两个弹窗（工作文件夹 / 运行目录）共用它，点目录只改输入框的值。
-function attachBrowser(modal, input) {
+export function attachBrowser(modal, input) {
   const browseButton = button('modal-browse', '浏览…')
   const browser = document.createElement('div')
   browser.className = 'modal-browser hidden'
@@ -150,8 +151,9 @@ function attachBrowser(modal, input) {
   return { browseButton, browser }
 }
 
-// 问一个工作文件夹路径；回车或「确定」给出路径，取消给 null。error 用来把上一次的失败原因带回来。
-export function askWorkspace({ mode, initial = '', recent = [], error = '' }) {
+// 问一个工作文件夹路径。回车或「确定」给出 { path, startup }（startup = 要不要「以后启动就打开它」），取消给 null。
+// error 用来把上一次的失败原因带回来。
+export function askWorkspace({ mode, initial = '', recent = [], error = '', startup = false }) {
   const creating = mode === 'create'
   const modal = openModal({
     title: creating ? '另存为' : '打开工作文件夹',
@@ -184,6 +186,20 @@ export function askWorkspace({ mode, initial = '', recent = [], error = '' }) {
   if (recent.length) modal.body.append(row, history.wrap)
   else modal.body.append(row)
 
+  // 「以后启动时打开它」归「打开」这个动作，不归设置窗口 —— 你开哪个文件夹的时候才想得起来这件事。
+  // 新建（另存为）不掺这一条：那时还没定下来要在哪儿干活。
+  let remember = null
+  if (!creating) {
+    const label = document.createElement('label')
+    label.className = 'modal-check'
+    const box = document.createElement('input')
+    box.type = 'checkbox'
+    box.checked = Boolean(startup)
+    label.append(box, document.createTextNode('以后启动时打开它'))
+    remember = box
+    row.after(label)
+  }
+
   modal.body.append(browser)
 
   const submit = () => {
@@ -192,7 +208,7 @@ export function askWorkspace({ mode, initial = '', recent = [], error = '' }) {
       modal.error.textContent = '请填一个绝对路径，或者用「浏览…」选一个文件夹'
       return
     }
-    modal.finish(value)
+    modal.finish({ path: value, startup: remember ? remember.checked : false })
   }
   input.addEventListener('input', () => { modal.error.textContent = '' })
   input.addEventListener('keydown', (event) => {

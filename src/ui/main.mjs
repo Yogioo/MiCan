@@ -1,25 +1,30 @@
 // 装配层：持有状态，把状态变更分发给各个界面模块，并定义应用动作。
 import {
-  NODE_DEFAULT_H,
-  NODE_DEFAULT_W,
   createGraph,
   createNode,
+  dataInto,
   dataOut,
+  execIn,
+  execOutAll,
   findNode,
   removeEdge,
   removeNode,
+  runnable,
   setNodeCwd,
   setNodeEntry,
   setNodeText,
 } from '../core/graph.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
-import { walkDown } from '../core/chain.mjs'
+import { routeFrom } from '../core/chain.mjs'
+import { pickValue } from '../core/pick.mjs'
+import { applyCanvas, applyMachine, canvas, machine } from '../core/settings.mjs'
 import { applyVars, collectVars } from '../core/vars.mjs'
 import { createHistory, push, redo as redoHistory, undo as undoHistory } from '../core/history.mjs'
 import { createView, zoomAt } from '../core/view.mjs'
 import { mountCanvas } from './canvas.mjs'
 import { mountEdges } from './edges.mjs'
 import { mountNodes } from './nodes.mjs'
+import { askSettings } from './settings-dialog.mjs'
 import { mountToolbar } from './toolbar.mjs'
 import { askRunDir, askWorkspace } from './workspace-dialog.mjs'
 
@@ -28,7 +33,8 @@ export const state = {
   graph: createGraph(),
   selection: null,
   workspace: null, // 工作文件夹的绝对路径，未打开时为 null
-  settings: { cwd: '' }, // 全局运行目录，存在用户目录里，不进存档；空串 = 跟随工作文件夹
+  // 跟机器走的那些值（命令行、超时、界面手感）不住在这儿：它们住在 core/settings.mjs，现读现用；
+  // 运行目录属于画布，在 canvas.cwd
   running: new Map(), // 运行中的命令节点：id -> 开跑时间。只活在内存里，不进存档
   saving: false, // 有一次落盘还在路上
   message: '',
@@ -37,8 +43,8 @@ export const state = {
 const subscribers = new Set()
 
 // 撤销：只认结构变化，连拖时快速连发的改动合并成一步。
+// 合并窗口多久算「一次改动」在设置里（machine.undoMergeMs）。
 const history = createHistory()
-const COALESCE_MS = 500
 let lastRecord = 0
 
 function graphSnapshot() {
@@ -67,7 +73,7 @@ export function update(mutate) {
   const after = graphSnapshot()
   if (after !== before) {
     const now = Date.now()
-    if (now - lastRecord > COALESCE_MS) push(history, before)
+    if (now - lastRecord > machine.undoMergeMs) push(history, before)
     lastRecord = now
   }
   // 视口也算画布状态，所以平移缩放同样要落盘；连拖时防抖会把它们并成一次
@@ -101,7 +107,7 @@ function showMessage(text) {
     draft.message = text
   })
   clearTimeout(messageTimer)
-  messageTimer = setTimeout(() => update((draft) => { draft.message = '' }), 4000)
+  messageTimer = setTimeout(() => update((draft) => { draft.message = '' }), machine.messageMs)
 }
 
 // ---- 落盘 / 另存为 / 打开 ----
@@ -117,11 +123,13 @@ async function loadRecent() {
   }
 }
 
-// 全局运行目录也由后端记着，跟这台机器走，不进画布存档。
+// 全局配置（命令行、超时…）也由后端记着，跟这台机器走，不进画布存档；运行目录在存档里，见 core/settings.mjs 的 canvas。
+// 全局设置读回来就收进 core/settings.mjs 那份机器配置里：界面和命令都现读它。
+// 它不属于画布状态（不进存档、不进撤销），所以改完只重绘一下。
 async function loadSettings() {
   try {
-    const data = await api('/api/settings', {})
-    update((draft) => { draft.settings = { cwd: typeof data.cwd === 'string' ? data.cwd : '' } })
+    applyMachine(await api('/api/settings', {}))
+    notify()
   } catch {
     // 读不到就当没设
   }
@@ -130,8 +138,7 @@ async function loadSettings() {
 // 改动一结束就把内存镜像到工作文件夹（ADR-0003）：没有「保存」这个动作，也没有「未保存」这个状态。
 // 防抖只是把连发的改动并成一次；真正保证新鲜的是「跑命令之前先 flush」。
 
-const AUTOSAVE_MS = 500
-let scheduled = null // 防抖计时器
+let scheduled = null // 防抖计时器（时长在设置里：machine.autosaveMs）
 let queue = Promise.resolve() // 落盘串成一条链，免得两次写撞在一起
 let inFlight = 0
 
@@ -139,9 +146,10 @@ function payload() {
   const docs = state.graph.nodes
     .filter((node) => node.kind === 'text')
     .map((node) => ({ file: node.file, content: node.text }))
-  // 缓存文件就是命令节点的值：裸输出写文件，元信息在存档的 results 里
+  // 缓存文件就是节点的值：裸输出写文件，元信息在存档的 results 里。
+  // 命令节点和提取节点都一样，所以过滤按「会不会跑」来，不按 kind 写死。
   const cache = state.graph.nodes
-    .filter((node) => node.kind === 'command' && node.result)
+    .filter((node) => runnable(node) && node.result)
     .map((node) => ({ id: node.id, content: node.result.output ?? '' }))
   return { canvas: serialize(state), docs, cache }
 }
@@ -149,7 +157,7 @@ function payload() {
 function scheduleSave() {
   if (!state.workspace) return
   clearTimeout(scheduled)
-  scheduled = setTimeout(saveNow, AUTOSAVE_MS)
+  scheduled = setTimeout(saveNow, machine.autosaveMs)
 }
 
 // 立刻写一次。命令跑完、链路每一步之后都靠它 —— 缓存文件得马上在盘上。
@@ -202,45 +210,77 @@ async function saveAs() {
   let initial = ''
   let error = ''
   for (;;) {
-    const input = await askWorkspace({ mode: 'create', initial, recent, error })
-    if (!input) return
+    const answer = await askWorkspace({ mode: 'create', initial, recent, error })
+    if (!answer) return
     try {
-      const response = await api('/api/workspace', { path: input, mode: 'create' })
+      const response = await api('/api/workspace', { path: answer.path, mode: 'create' })
       remember(response)
       adoptWorkspace(response.root, { graph: state.graph, view: state.view })
       await saveNow() // 新文件夹里什么都没有，把当前画布整个写过去
       showMessage('已另存为新的工作文件夹')
       return
     } catch (failure) {
-      initial = input // 弹窗重新开，错误写在里面，路径不用重打
+      initial = answer.path // 弹窗重新开，错误写在里面，路径不用重打
       error = `另存为失败：${failure.message}`
     }
   }
+}
+
+// 打开一个工作文件夹：把存档读回来装上。弹窗那条路和「启动时自动打开」那条路都走它。
+async function loadWorkspace(path) {
+  const response = await api('/api/workspace', { path, mode: 'open' })
+  remember(response)
+  const restored = response.canvas ? deserialize(response.canvas) : null
+  const cache = response.cache ?? {}
+  // 元信息在存档里、裸输出在缓存文件里，两份合起来才是一个完整的结果
+  if (restored) {
+    for (const node of restored.graph.nodes) if (node.result) node.result.output = cache[node.id] ?? ''
+    applyCanvas(restored.settings) // 跟这份画布走的设置（步数上限这类）跟着存档换
+  }
+  adoptWorkspace(response.root, restored ?? { graph: createGraph(), view: state.view })
+  return restored
 }
 
 async function openWorkspace() {
   let initial = state.workspace ?? recent[0] ?? ''
   let error = ''
   for (;;) {
-    const input = await askWorkspace({ mode: 'open', initial, recent, error })
-    if (!input) return
+    const answer = await askWorkspace({ mode: 'open', initial, recent, error, startup: machine.openWorkspace === initial })
+    if (!answer) return
     try {
-      const response = await api('/api/workspace', { path: input, mode: 'open' })
-      remember(response)
-      const restored = response.canvas ? deserialize(response.canvas) : null
-      const cache = response.cache ?? {}
-      // 元信息在存档里、裸输出在缓存文件里，两份合起来才是一个完整的结果
-      if (restored) {
-        for (const node of restored.graph.nodes) if (node.result) node.result.output = cache[node.id] ?? ''
-      }
-      adoptWorkspace(response.root, restored ?? { graph: createGraph(), view: state.view })
+      const restored = await loadWorkspace(answer.path)
+      const note = await rememberStartup(answer.path, answer.startup)
       resetHistory()
-      showMessage(restored ? '已打开' : '文件夹里没有画布存档，按空白画布打开')
+      showMessage(`${restored ? '已打开' : '文件夹里没有画布存档，按空白画布打开'}${note}`)
       return
     } catch (failure) {
-      initial = input
+      initial = answer.path
       error = `打开失败：${failure.message}`
     }
+  }
+}
+
+// 「以后启动时打开它」：勾了就把这个文件夹记进全局配置，取消勾就把原来那个清掉。
+// 它的家在「打开」弹窗而不是设置窗口 —— 你开哪个文件夹的时候才想得起来这件事。
+async function rememberStartup(path, wanted) {
+  const next = wanted ? path : ''
+  if (next === machine.openWorkspace) return ''
+  try {
+    applyMachine(await api('/api/settings', { openWorkspace: next }))
+    return next ? '，以后启动就打开它' : ''
+  } catch (error) {
+    return `（没能记住启动文件夹：${error.message}）`
+  }
+}
+
+// 启动时打开设置里指定的那个工作文件夹；没设就等你自己点「打开」。
+async function openStartupWorkspace() {
+  if (!machine.openWorkspace || state.workspace) return
+  try {
+    await loadWorkspace(machine.openWorkspace)
+    resetHistory()
+  } catch (error) {
+    showMessage(`设置里那个启动工作文件夹打不开：${error.message}`)
   }
 }
 
@@ -249,8 +289,8 @@ async function openWorkspace() {
 function createNodeAt(world, kind) {
   const node = createNode({
     kind,
-    x: world.x - NODE_DEFAULT_W / 2,
-    y: world.y - NODE_DEFAULT_H / 2,
+    x: world.x - machine.nodeDefaultW / 2,
+    y: world.y - machine.nodeDefaultH / 2,
   })
   update((draft) => {
     draft.graph.nodes.push(node)
@@ -324,40 +364,38 @@ async function streamExec(command, cwd, onChunk) {
   return exit ?? { code: 1, failed: true, output: '连接断了，命令没有回来' }
 }
 
-// 命令的运行目录：节点自己设了就用节点的（覆盖全局），没设就跟全局，都没有就是工作文件夹。
+// 命令的运行目录：节点自己设了就用节点的（覆盖），没设就看这份画布的，都没有就是工作文件夹。
+// 两层都进存档（节点那个在节点上、画布那个在存档顶层），所以换台机器打开会跟着带过去。
 function runDirOf(node) {
-  return node.cwd || state.settings.cwd || ''
+  return node.cwd || canvas.cwd || ''
 }
 
-// 全局运行目录：所有命令节点的默认值，节点自己设了就不看它。
-async function setGlobalRunDir() {
-  const current = state.settings.cwd
-  const dir = await askRunDir({
-    initial: current,
-    hint: '所有命令节点的默认运行目录；留空就用工作文件夹',
-    quick: [{ label: '工作文件夹', value: '', hint: state.workspace ?? '还没打开工作文件夹' }],
-  })
-  if (dir === null || dir === current) return
+// 设置窗口：全局配置和存档配置都在里面改，值由后端存、存档自己落盘。
+async function openSettings() {
   try {
-    const data = await api('/api/settings', { cwd: dir })
-    update((draft) => { draft.settings = { cwd: data.cwd ?? '' } })
-    showMessage(data.cwd ? `全局运行目录：${data.cwd}` : '全局运行目录：跟随工作文件夹')
+    const saved = await askSettings({ current: { machine, canvas } })
+    if (!saved) return
+    applyMachine(saved.machine) // 跟机器走的：后端刚存下来，以后每次跑命令它自己去读
+    applyCanvas(saved.canvas) // 跟画布走的：收进内存，下面一次落盘就写进存档
+    scheduleSave()
+    notify()
+    showMessage('设置已保存')
   } catch (error) {
-    showMessage(`设置失败：${error.message}`)
+    showMessage(`读设置失败：${error.message}`)
   }
 }
 
-// 单个节点的运行目录：设了就覆盖全局，清空就退回全局；也可以一步点名要工作文件夹。
+// 单个节点的运行目录：设了就覆盖画布那一层，清空就退回它；也可以一步点名要工作文件夹。
 async function setRunDir(id) {
   const node = findNode(state.graph, id)
   if (!node || node.kind !== 'command') return
   const dir = await askRunDir({
     initial: node.cwd ?? '',
-    hint: `相对工作文件夹的路径（“.” 就是工作文件夹），或这台机器上的绝对路径；留空就跟随全局（${state.settings.cwd || '工作文件夹'}）`,
+    hint: `相对工作文件夹的路径（“.” 就是工作文件夹），或这台机器上的绝对路径；留空就跟随这份画布的运行目录（${canvas.cwd || '工作文件夹'}）`,
     placeholder: '相对工作文件夹，如 . 或 ./sub；或绝对路径',
     quick: [
       { label: '工作文件夹', value: '.', hint: state.workspace ?? '还没打开工作文件夹' },
-      { label: '跟随全局', value: '', hint: state.settings.cwd || '全局没设，就是工作文件夹' },
+      { label: '跟随画布', value: '', hint: canvas.cwd || '画布没设，就是工作文件夹' },
     ],
   })
   if (dir === null || dir === (node.cwd ?? '')) return
@@ -449,7 +487,7 @@ async function runNode(id) {
 
 async function runCommand(id) {
   await flush()
-  const outcome = await runNode(id)
+  const outcome = await runOne(id)
   if (!outcome.ok) return showMessage(outcome.reason)
   if (outcome.result.failed) showMessage(`退出码 ${outcome.result.code}，没有覆写下游文本节点`)
   else if (outcome.targets === 0) showMessage('没有下游文本节点，输出只显示在节点上')
@@ -457,30 +495,77 @@ async function runCommand(id) {
   await saveNow() // 跑完立刻落盘：缓存文件得马上在盘上，下游和断电都等着它
 }
 
-// 跑链路：从入口顺着执行边一路跑下去，一个失败就停，后面那些标成没运行。
-async function runChain(entryId) {
-  const ids = walkDown(state.graph, entryId)
-  if (!ids.length) return
-  await flush()
-
-  for (let index = 0; index < ids.length; index += 1) {
-    const outcome = await runNode(ids[index])
-    const behind = ids.slice(index + 1)
-    if (!outcome.ok) {
-      markSkipped(behind)
-      return showMessage(`第 ${index + 1} 个没跑起来：${outcome.reason}${behind.length ? `；后面 ${behind.length} 个没跑` : ''}`)
-    }
-    // 跑一个就落一次盘：下一个节点要读它的缓存文件，断在这儿也不白跑
-    await saveNow()
-    if (outcome.result.failed) {
-      markSkipped(behind)
-      return showMessage(`第 ${index + 1} 个退出码 ${outcome.result.code}，链停在这儿${behind.length ? `；后面 ${behind.length} 个没跑` : ''}`)
-    }
-  }
-  showMessage(`链路跑完：${ids.length} 个命令节点`)
+// 跑一个节点：命令节点去 spawn，提取节点只算值。链里每一步都走这道门。
+function runOne(id) {
+  return findNode(state.graph, id)?.kind === 'extract' ? runExtract(id) : runNode(id)
 }
 
-// 没跑到的那些在节点上留一句话，不然分不清「没跑」和「跑出来是空的」。
+// 一个节点的「值」的正文：文本节点是那份 md，会跑的节点是最近一次运行的输出。
+function valueText(node) {
+  if (!node) return ''
+  if (node.kind === 'text') return node.text ?? ''
+  return node.result?.output ?? ''
+}
+
+// 提取节点的源：默认取执行来路那个节点的值（先后由执行边给），有数据入边就用那份文本。
+function sourceTextOf(node) {
+  const edge = dataInto(state.graph, node.id)[0]
+  if (edge) return valueText(findNode(state.graph, edge.from))
+  const inEdge = execIn(state.graph, node.id)
+  return inEdge ? valueText(findNode(state.graph, inEdge.from)) : ''
+}
+
+// 跑一个提取节点：拿源文本按取法取出一个字符串，那就是它的值。它不 spawn 任何进程，
+// 所以是瞬时的 —— 但也照样落缓存文件，于是 {{名字}} / [[名字]] 对它同样成立。
+async function runExtract(id) {
+  const node = findNode(state.graph, id)
+  if (!node) return { ok: false, reason: '这个节点运行不了' }
+  const startedAt = Date.now()
+  const { value, error } = pickValue(sourceTextOf(node), node.pick ?? '')
+  if (error) return { ok: false, reason: `提取不出值：${error}` }
+
+  const targets = dataOut(state.graph, id)
+    .map((edge) => findNode(state.graph, edge.to))
+    .filter((item) => item?.kind === 'text')
+  update((draft) => {
+    const target = findNode(draft.graph, id)
+    if (target) {
+      target.result = { output: value, at: Date.now(), elapsed: Date.now() - startedAt }
+      target.skipped = false
+    }
+    for (const item of targets) setNodeText(draft.graph, item.id, value)
+  })
+  return { ok: true, result: { failed: false, output: value }, targets: targets.length }
+}
+
+// 跑链路：从入口开始，每一步拿当前节点的值按标签挑下一根执行出边，一个失败就停。
+// 出边可以成环，所以「后面还有几个没跑」在这儿算不出来 —— 兜「跑飞了」只有步数上限。
+async function runChain(entryId) {
+  await flush() // 第一步就要读盘上的东西，待写的先写完
+  let cursor = entryId
+  for (let index = 0; index < canvas.stepLimit; index += 1) {
+    const outcome = await runOne(cursor)
+    if (!outcome.ok) return showMessage(`第 ${index + 1} 步没跑起来：${outcome.reason}`)
+    await saveNow() // 走一步落一次盘：下一个节点要读它的缓存文件，断在这儿也不白跑
+    if (outcome.result.failed) return showMessage(`第 ${index + 1} 步退出码 ${outcome.result.code}，链停在这儿`)
+
+    const value = (outcome.result.output ?? '').trim()
+    const next = routeFrom(state.graph, cursor, value)
+    if (next.done) return showMessage(`链路跑完：${index + 1} 步，走到一个没有出边的节点`)
+    if (next.stuck) {
+      // 它本来可能走的那几根都记上「未运行」，不然分不清「没走」和「走了是空的」
+      markSkipped(execOutAll(state.graph, cursor).map((edge) => edge.to))
+      return showMessage(`第 ${index + 1} 步的值是「${clip(value)}」，出边上的标签是「${next.labels.join('、')}」，一根都不匹配，停在这儿`)
+    }
+    cursor = next.to
+  }
+  return showMessage(`走了 ${canvas.stepLimit} 步还没停，多半是环没兜住，停下来别再走了`)
+}
+
+// 提示里别把一整份输出塞进去
+const clip = (text) => (text.length > 24 ? `${text.slice(0, 24)}…` : text)
+
+// 没走到的那些在节点上留一句话，不然分不清「没走」和「走了是空的」。
 // 这不是画布状态（不进存档），所以不走历史也不排落盘。
 function markSkipped(ids) {
   if (!ids.length) return
@@ -507,7 +592,7 @@ function applyGraph(snapshot) {
   const kept = new Map(state.graph.nodes.map((node) => [node.id, node.result]))
   const restored = deserialize({ version: FORMAT_VERSION, nodes, edges }).graph
   for (const node of restored.nodes) {
-    if (node.kind === 'command' && kept.get(node.id)) node.result = kept.get(node.id)
+    if (runnable(node) && kept.get(node.id)) node.result = kept.get(node.id)
   }
   state.graph = restored
   state.selection = null
@@ -566,11 +651,14 @@ const nodes = mountNodes({
   // 菜单里只在「没有执行入边」的节点上给这一项，所以 setNodeEntry 不会拒绝
   onToggleEntry: (id) => update((draft) => setNodeEntry(draft.graph, id, !findNode(draft.graph, id)?.entry)),
   onNewCommandNode: (world) => createNodeAt(world, 'command'),
+  onNewExtractNode: (world) => createNodeAt(world, 'extract'),
   onSetRunDir: setRunDir,
 })
-const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, setGlobalRunDir } })
+const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings } })
+// 设置要先读到（全局运行目录、启动要打开哪个工作文件夹都在里面），所以这两句串起来做
 loadRecent()
-loadSettings()
+  .then(loadSettings)
+  .then(openStartupWorkspace)
 
 const hint = document.getElementById('hint')
 

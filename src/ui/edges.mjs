@@ -1,5 +1,5 @@
 // 边层：把边画成 SVG 曲线，处理建边、选中、标签编辑。
-import { addEdge, connectProblem, findNode, setEdgeLabel } from '../core/graph.mjs'
+import { addEdge, connectProblem, findNode, labelProblem, setEdgeLabel } from '../core/graph.mjs'
 import { edgeGeometry, portPoint, previewPath } from '../core/geometry.mjs'
 import { toWorld } from '../core/view.mjs'
 
@@ -34,9 +34,11 @@ export function mountEdges({ getState, update, onError }) {
       entry.group.classList.toggle('data', edge.kind !== 'exec')
       entry.line.setAttribute('marker-end', selected ? 'url(#arrow-selected)' : edge.kind === 'exec' ? 'url(#arrow-exec)' : 'url(#arrow)')
       entry.label.style.transform = `translate(${mid.x}px, ${mid.y}px) translate(-50%, -50%)`
-      // 标签只是变量名 —— 执行边不携带数据，没有名字可写
-      const shown = edge.kind === 'exec' ? '' : edge.label
-      entry.label.hidden = edge.kind === 'exec'
+      // 两族边都带标签，只是用处不同：数据边上是变量名，执行边上是期望匹配的值。
+      const shown = edge.label ?? ''
+      // 空标签靠 .empty 类藏起来（CSS 里 display:none）—— 不能用 hidden 属性，
+      // 那个属性在双击编辑时会把刚塞进去的输入框一起藏掉。
+      entry.label.hidden = false
       if (entry.labelText !== shown) {
         entry.label.textContent = shown
         entry.label.classList.toggle('empty', !shown)
@@ -98,14 +100,15 @@ export function mountEdges({ getState, update, onError }) {
     const entry = elements.get(id)
     if (!entry || entry.editing) return
     const edge = getState().graph.edges.find((item) => item.id === id)
-    if (!edge || edge.kind === 'exec') return // 执行边没有名字可改
+    if (!edge) return
 
     const original = edge.label ?? ''
     const input = document.createElement('input')
     input.className = 'edge-input'
     input.value = original
-    input.placeholder = '标签'
+    input.placeholder = edge.kind === 'exec' ? '匹配什么值（留空 = 兜底）' : '变量名'
     entry.editing = true
+    entry.label.hidden = false // 空标签的边本来被藏起来，编辑时要让它出来
     entry.label.classList.remove('empty')
     entry.label.textContent = ''
     entry.label.append(input)
@@ -120,7 +123,10 @@ export function mountEdges({ getState, update, onError }) {
       input.remove()
       entry.editing = false
       entry.labelText = null // 强制重画标签
-      if (commit && value !== original) update((state) => setEdgeLabel(state.graph, id, value))
+      const changed = commit && value !== original
+      const problem = changed ? labelProblem(getState().graph, id, value) : null
+      if (problem) onError(problem)
+      else if (changed) update((state) => setEdgeLabel(state.graph, id, value))
       else render(getState())
     }
 

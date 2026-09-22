@@ -1,18 +1,16 @@
 // 视图：画布可见区域（平移 + 缩放）的纯数学，不碰 DOM。
+import { machine } from './settings.mjs'
 
-export const MIN_SCALE = 0.1
-export const MAX_SCALE = 4
-
-const GRID_STEP = 24 // 点阵在世界坐标下的基准间距
-const GRID_MIN_PX = 12 // 点阵在屏幕上允许的最小间距
-const GRID_MAX_PX = 48 // 点阵在屏幕上允许的最大间距
+// 点阵在屏幕上允许的间距范围：这是渲染下限，不是给人配的项，跟着点阵间距一起变就行
+const GRID_MIN_PX = 12
+const GRID_MAX_PX = 48
 
 export function createView() {
   return { x: 0, y: 0, scale: 1 }
 }
 
 export function clampScale(scale) {
-  return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale))
+  return Math.min(machine.zoomMax, Math.max(machine.zoomMin, scale))
 }
 
 export function toWorld(view, sx, sy) {
@@ -40,7 +38,7 @@ export function cssTransform(view) {
 
 // 点阵在屏幕上的间距与相位：间距按 2 的幂调整，避免缩到极小或极大时糊成一片。
 export function gridMetrics(view) {
-  let step = GRID_STEP
+  let step = machine.gridStep
   let size = step * view.scale
   while (size < GRID_MIN_PX) {
     step *= 2
