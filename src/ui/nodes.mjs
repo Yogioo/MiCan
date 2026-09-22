@@ -62,7 +62,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     const running = state.running.has(node.id)
     const cmd = el.querySelector('.node-cmd')
     if (cmd.textContent !== node.command) cmd.textContent = node.command
-    // 命令里有 {{变量}} 时节点上留的是模板；鼠标停上去看实际跑了哪条、在哪个目录跑
+    // 命令里有 {{变量}} / [[变量]] 时节点上留的是模板；鼠标停上去看实际跑了哪条、在哪个目录跑
     const own = node.cwd // 节点自己写的：相对工作文件夹，或本机绝对路径
     const runDir = own || state.settings.cwd || ''
     const notes = []

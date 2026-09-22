@@ -329,13 +329,10 @@ async function runCommand(id) {
   if (state.running.has(id)) return showMessage('这个命令还在跑，等它结束')
 
   // 变量注入只改这一次要跑的命令，命令节点上的模板不动
-  const { vars, errors } = collectVars(state.graph, id)
+  const { vars, errors } = collectVars(state.graph, id, state.workspace)
   const injected = applyVars(node.command, vars)
-  const missing = [...new Set(injected.missing)]
-  if (errors.length || missing.length) {
-    if (missing.length) errors.push(`{{${missing.join('}}、{{')}}} 没有对应的入边`)
-    return showMessage(`变量没对上：${errors.join('；')}`)
-  }
+  const problems = [...new Set([...errors, ...injected.problems])]
+  if (problems.length) return showMessage(`变量没对上：${problems.join('；')}`)
   const command = injected.command
 
   const targets = state.graph.edges
