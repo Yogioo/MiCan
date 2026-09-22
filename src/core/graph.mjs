@@ -1,4 +1,5 @@
 // 图：节点与边的纯数据操作，不碰 DOM。
+import { DEFAULT_SCHEDULE } from './schedule.mjs'
 import { machine } from './settings.mjs'
 
 let seq = 0
@@ -12,16 +13,21 @@ export function createGraph() {
   return { nodes: [], edges: [] }
 }
 
-export function createNode({ kind = 'text', x = 0, y = 0, w = machine.nodeDefaultW, h = machine.nodeDefaultH, text = '', command = '', cwd = '', file = '', entry = false, pick = '' } = {}) {
+export function createNode({ kind = 'text', x = 0, y = 0, w = machine.nodeDefaultW, h = machine.nodeDefaultH, text = '', command = '', cwd = '', file = '', pick = '', schedule = '' } = {}) {
   const id = newId('n')
-  if (kind === 'command') return { id, kind, x, y, w, h, command, cwd, entry }
+  if (kind === 'command') return { id, kind, x, y, w, h, command, cwd }
   if (kind === 'extract') return { id, kind, x, y, w, h, pick }
+  if (kind === 'entry') return { id, kind, x, y, w, h }
+  if (kind === 'timer') return { id, kind, x, y, w, h, schedule: schedule || DEFAULT_SCHEDULE }
   return { id, kind: 'text', x, y, w, h, file: file || `docs/${id}.md`, text }
 }
 
 // 会跑的节点：命令节点跑命令，提取节点算它的值。两者都能进链，都有值和缓存文件。
 // 判断「是不是会跑的节点」都走这里，别到处写 kind === 'command'。
 export const runnable = (node) => node?.kind === 'command' || node?.kind === 'extract'
+
+// 触发节点：入口和定时器。一条链的两个起点 —— 只有执行出边，没有值、没有缓存文件、也没有数据端口。
+export const trigger = (node) => node?.kind === 'entry' || node?.kind === 'timer'
 
 // 文件名的唯一入口：只留一个文件名，补上 .md，其余（路径分隔符、前导点）挡掉。
 export function normalizeFileName(name) {
@@ -47,6 +53,13 @@ export function setNodePick(graph, id, pick) {
   const node = findNode(graph, id)
   if (!node) return
   node.pick = pick
+}
+
+// 时间表：定时器节点上写的一行文本（`每 30 分钟` / `每天 09:30`）。解析是 schedule.mjs 的事，这里只存。
+export function setNodeSchedule(graph, id, schedule) {
+  const node = findNode(graph, id)
+  if (!node) return
+  node.schedule = schedule
 }
 
 // 运行目录：空串表示跟着上一层（全局，再到工作文件夹）；相对路径相对工作文件夹（“.” 就是工作文件夹），
@@ -128,13 +141,26 @@ export function connectProblem(graph, from, to, kind) {
   if (graph.edges.some((edge) => edge.from === from && edge.to === to && edge.kind === kind)) {
     return `这两点之间已经有一条${kind === 'exec' ? '执行边' : '数据边'}了`
   }
-  if (kind === 'data') return null
+  if (kind === 'data') {
+    // 触发节点没有值可传，也没有数据端口
+    if (trigger(source) || trigger(target)) return '入口和定时器不传值（它们只有执行端口）'
+    return null
+  }
   if (kind !== 'exec') return `不认识的边：${kind}`
 
-  if (!runnable(source) || !runnable(target)) return '执行边只能连会跑的节点（命令节点或提取节点）'
-  if (target.entry) return '它已经是入口了，起点头上接不了执行边'
-  // 入边不限根数：走路时光标只有一个，「从哪儿来」永远是确定的，所以多根入边没有歧义。
-  // 而且环的入口节点天生就有两根入边（外面一根、回边一根），卡着就画不出环。
+  // 执行边：入口和定时器是起点，各自只带一根出边；会跑的节点之间才是「按值分路」那一套。
+  if (source.kind === 'timer') {
+    if (target.kind !== 'entry') return '定时器只能连入口节点'
+    return execOutAll(graph, from).length ? '定时器只能指一个入口' : null
+  }
+  if (source.kind === 'entry') {
+    if (!runnable(target)) return '入口只能连会跑的节点（命令节点或提取节点）'
+    return execOutAll(graph, from).length ? '入口只能有一根执行出边' : null
+  }
+  if (!runnable(source)) return '执行边只能从会跑的节点、入口或定时器出发'
+  if (!runnable(target)) return '执行边的去处得是会跑的节点（入口和定时器是起点）'
+  // 入边不限根数：走路时光标只有一个，「从哪儿来」永远是确定的，所以多根入边没有歧义；
+  // 几条链走到同一个节点上（合流）也是合法的。
   // 空标签是兜底，只能有一根，否则「不匹配时走到哪儿」就说不清了。
   // 出边可以成环（回来指向已经走过的节点），所以这里没有反环检查 —— 兜底靠运行时的步数上限。
   if (execOutAll(graph, from).some((edge) => !(edge.label ?? ''))) return '它的执行输出已经有一根兜底边了'
@@ -167,11 +193,4 @@ export function setEdgeLabel(graph, id, label) {
   edge.label = label
 }
 
-// 入口：链的起点。有执行入边的节点当不了入口，否则「入口」就有两种意思了。
-export function setNodeEntry(graph, id, entry) {
-  const node = findNode(graph, id)
-  if (!node || node.kind !== 'command') return false
-  if (entry && execIn(graph, id)) return false
-  node.entry = Boolean(entry)
-  return true
-}
+

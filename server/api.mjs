@@ -5,6 +5,7 @@ import path from 'node:path'
 import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, cacheFile } from '../src/core/paths.mjs'
 import { shellNames } from './exec.mjs'
 import { createRunner } from './runner.mjs'
+import { createScheduler } from './scheduler.mjs'
 
 const RECENT_FILE = path.join(os.homedir(), '.mican', 'recent.json')
 const SETTINGS_FILE = path.join(os.homedir(), '.mican', 'settings.json')
@@ -27,6 +28,16 @@ export function createApi(initialRoot) {
 
   // 跑链的人：它读盘上的画布、自己走图、自己把结果写盘。它占着哪个文件，下面的 save 就跳过哪个。
   const runner = createRunner({ getRoot: () => root, resolveCwd, readSettings })
+  // 定时器：后端自己看着时刻表，到点让运行器从入口出发跑链（ADR-0005）。
+  // 时刻表在盘上的 mican.json 里，所以每次落盘与每次换工作文件夹之后重新装一次。
+  const scheduler = createScheduler({
+    getRoot: () => root,
+    runChain: (entryId) => runner.start({ id: entryId, mode: 'chain', trigger: 'timer' }),
+    isRunning: (entryId) => runner.isRunning(entryId),
+  })
+  // 起来的时候盘上可能已经有一份画布（环境变量指的文件夹）：先把时刻表装上。
+  // 不然要等第一次落盘或打开文件夹，定时器才会开始响 —— 在那之前界面看上去是死的。
+  if (root) scheduler.sync()
 
   function inside(relative) {
     const target = path.resolve(root, relative)
@@ -57,6 +68,7 @@ export function createApi(initialRoot) {
       await fs.mkdir(target, { recursive: true })
       if ((await fs.readdir(target)).length > 0) throw new Error('目标文件夹不为空')
       root = target
+      await scheduler.sync() // 新文件夹里没有画布，等于把上一份的时刻表全撤掉
       return { root, canvas: null, cache: {}, recent: await remember(target) }
     }
     const stat = await fs.stat(target).catch(() => null)
@@ -66,6 +78,7 @@ export function createApi(initialRoot) {
       .readFile(path.join(target, CANVAS_FILE), 'utf8')
       .then((raw) => JSON.parse(raw))
       .catch(() => null) // 没有存档就是空文件夹，照样能打开
+    await scheduler.sync() // 换了一份画布，时刻表跟着换
     return { root, canvas, cache: await readCache(), recent: await remember(target) }
   }
 
@@ -154,6 +167,7 @@ export function createApi(initialRoot) {
 
     // 画布存档最后写 —— 它相当于提交。
     await fs.writeFile(path.join(root, CANVAS_FILE), JSON.stringify(canvas, null, 2), 'utf8')
+    await scheduler.sync() // 存档里可能多了/少了/改写了定时器；没变的那几个原地不动
   }
 
   // 设置文件是外来的（手改、旧版本、写坏了）：范围外夹住，不是数就用默认。
@@ -281,7 +295,7 @@ export function createApi(initialRoot) {
         await save(body)
         return send(res, 200, { ok: true })
       }
-      if (route === '/api/runs') return send(res, 200, { items: runner.list() })
+      if (route === '/api/runs') return send(res, 200, { items: runner.list(), triggers: scheduler.triggers() })
       if (route === '/api/run') return send(res, 200, await runner.start({ id: body.id, mode: body.mode }))
       if (route.startsWith('/api/run/') && route.endsWith('/stop')) {
         return send(res, 200, runner.stop(route.slice('/api/run/'.length, -'/stop'.length)))

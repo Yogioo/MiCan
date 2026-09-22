@@ -1,5 +1,6 @@
 // 节点层：渲染三类节点，处理拖动、缩放、选中、编辑、右键菜单。
-import { execIn, moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeCwd, setNodeFile, setNodePick, setNodeText } from '../core/graph.mjs'
+import { moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeCwd, setNodeFile, setNodePick, setNodeSchedule, setNodeText } from '../core/graph.mjs'
+import { describeSchedule, dailyText, intervalText, nextFireAt, parseSchedule, scheduleFields } from '../core/schedule.mjs'
 import { canvas, machine } from '../core/settings.mjs'
 import { toWorld } from '../core/view.mjs'
 import { renderMarkdown } from './markdown.mjs'
@@ -8,8 +9,10 @@ import { renderMarkdown } from './markdown.mjs'
 const isAbsolutePath = (value) => /^(?:[a-zA-Z]:[\\/]|[\\/])/.test(value)
 
 const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
+// 脚上的时刻：默认只到分；秒级定时器要看到秒，不然一秒响一次也像什么都没发生
+const clockOf = (ts, withSeconds = false) => new Date(ts).toTimeString().slice(0, withSeconds ? 8 : 5)
 
-export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onToggleEntry, onNewCommandNode, onNewExtractNode, onSetRunDir }) {
+export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onNewCommandNode, onNewExtractNode, onNewEntryNode, onNewTimerNode, onSetRunDir }) {
   const layer = document.getElementById('nodes')
   const viewport = document.getElementById('viewport')
   const elements = new Map()
@@ -32,6 +35,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       // 编辑中的节点正文归输入框管，这里不碰
       if (node.kind === 'text') renderText(el, node)
       else if (node.kind === 'extract') renderExtract(el, node)
+      else if (node.kind === 'entry') renderEntry(el, node, state)
+      else if (node.kind === 'timer') renderTimer(el, node)
       else renderCommand(el, node, state)
     }
     for (const [id, el] of elements) {
@@ -88,11 +93,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     }
     body.classList.toggle('need-cmd', !node.command) // 还没写命令时，占位文字改成提示怎么填
     el.classList.toggle('running', running)
-    el.classList.toggle('is-entry', Boolean(node.entry)) // 入口：链从这里开始
     // 设了运行目录（全局或节点）就在脚上带出来，不然跑完就忘了
     const at = own === '.' ? '工作文件夹' : own || runDir
     const foot = []
-    if (node.entry) foot.push('入口')
     if (running) foot.push(`运行中 · ${seconds(Date.now() - state.running.get(node.id))}`)
     else {
       // 「没跑」和「跑出来是空的」得分得清，所以未运行跟上次的结果并列显示
@@ -131,16 +134,94 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     }
     body.classList.toggle('need-cmd', !spec) // 还没填取法时，占位文字改成提示怎么填
     el.classList.toggle('running', false)
-    el.classList.toggle('is-entry', false) // 提取节点当不了入口
     const at = node.result ? new Date(node.result.at).toTimeString().slice(0, 8) : ''
     el.querySelector('.node-foot').textContent = at ? `取值 · ${at}` : ''
   }
 
-  // 连接点：会跑的节点两个（执行在上、数据在下），文本节点一个。从哪个点拉出去就是哪一种边。
+  // 入口节点：链的起点。它没有进程、没有值，只有一根执行出边；将来子图的入口也是它。
+  function renderEntry(el, node, state) {
+    const body = el.querySelector('.node-body')
+    if (el._content !== '链从这里开始') {
+      body.textContent = '链从这里开始'
+      el._content = '链从这里开始'
+    }
+    // 入口自己不跑，但「有一条链正从这儿走」看它 —— 运行记录里的 nodeId 就是它
+    const active = [...state.runs.values()].some((run) => run.nodeId === node.id)
+    el.classList.toggle('running', active)
+    el.querySelector('.node-foot').textContent = active ? '运行中' : ''
+  }
+
+  // 定时器节点：顶上写人话（「每 30 分钟」），中间就是控件 —— 模式、数值或时刻直接在节点上点，
+  // 脚上写下次什么时候、上一回响没响。控件写回去的还是那一行时间表文本（schedule.mjs 解析）。
+  function renderTimer(el, node) {
+    const text = node.schedule ?? ''
+    const schedule = parseSchedule(text)
+    const bar = el.querySelector('.node-cmd')
+    const label = schedule ? describeSchedule(schedule) : `时间表认不出来：${text}`
+    if (el._bar !== label) {
+      bar.textContent = label
+      el._bar = label
+    }
+    el.classList.toggle('invalid', !schedule) // 认不出来就标红，别等到点才发现不响
+
+    fillTimerForm(el, schedule)
+
+    const foot = []
+    // 秒级的时间表就把秒带出来，不然同一分钟里刷多少次都是一个样子
+    const precise = schedule?.mode === 'interval' && schedule.every < 60000
+    if (schedule) foot.push(`下次 ${clockOf(nextFireAt(schedule), precise)}`)
+    if (node.result?.at) foot.push(`上次 ${clockOf(node.result.at, precise)}${node.result.skipped ? '（跳过）' : ''}`)
+    const footEl = el.querySelector('.node-foot')
+    footEl.textContent = foot.join(' · ')
+    footEl.title = node.result?.note ?? '' // 「上一条还在跑」这类话太长，收在悬停里
+  }
+
+  // 控件按时间表填。模式按钮与哪一行显着每次都摆正；值只填「没在编辑的」那个控件 ——
+  // 正在输入的手不打断（跑链的时候界面每半秒会重绘一次）。
+  function fillTimerForm(el, schedule) {
+    const fields = scheduleFields(schedule)
+    const mode = fields?.mode ?? 'interval'
+    for (const button of el.querySelectorAll('.timer-modes button')) button.classList.toggle('on', button.dataset.mode === mode)
+    el.querySelector('.timer-interval').hidden = mode !== 'interval'
+    el.querySelector('.timer-daily').hidden = mode !== 'daily'
+    const fill = (input, value) => {
+      if (document.activeElement !== input) input.value = value
+    }
+    if (mode === 'daily') fill(el.querySelector('.timer-at'), fields.at)
+    else if (fields) {
+      fill(el.querySelector('.timer-count'), String(fields.count))
+      fill(el.querySelector('.timer-unit'), fields.unit)
+    }
+  }
+
+  // 控件上的改动落到节点上（写回去的还是那一行文本）。认不出来的（比如数值被清空），
+  // 就当没动过、把控件按现在这份填回去 —— 不静默改掉用户写下的东西。
+  function commitSchedule(el, text) {
+    const node = getState().graph.nodes.find((item) => item.id === el.dataset.id)
+    if (!node) return
+    if (!parseSchedule(text) || text === node.schedule) render(getState())
+    else update((state) => setNodeSchedule(state.graph, node.id, text))
+  }
+
+  // 连接点：会跑的节点两个（执行在上、数据在下），文本节点一个；
+  // 入口和定时器只有执行出边，所以只有一个居中的执行端口。
+  const EXEC_PORT = '<div class="node-port port-exec" data-kind="exec" title="执行端口：连下一个会跑的节点"></div>'
   const RUN_PORTS =
-    '<div class="node-port port-exec" data-kind="exec" title="执行端口：连下一个会跑的节点"></div>' +
-    '<div class="node-port port-data" data-kind="data" title="数据端口：连文本节点或会跑的节点"></div>'
+    EXEC_PORT + '<div class="node-port port-data" data-kind="data" title="数据端口：连文本节点或会跑的节点"></div>'
   const TEXT_PORT = '<div class="node-port port-data" data-kind="data" title="数据端口：把正文喂给会跑的节点"></div>'
+
+  // 定时器的控件：模式（固定间隔 / 每天）、间隔的数值与单位、每天的时刻。
+  // 这里是模板，值由 fillTimerForm 填；改控件打的是同一条路 —— 写回一行时间表文本。
+  const TIMER_FORM =
+    '<div class="timer-row timer-modes">' +
+    '<button type="button" data-mode="interval">固定间隔</button>' +
+    '<button type="button" data-mode="daily">每天</button>' +
+    '</div>' +
+    '<div class="timer-row timer-interval">' +
+    '<input class="timer-count" type="number" min="1" max="999" step="1" value="30">' +
+    '<select class="timer-unit"><option value="秒">秒</option><option value="分钟">分钟</option><option value="小时">小时</option></select>' +
+    '</div>' +
+    '<div class="timer-row timer-daily"><input class="timer-at" type="time" value="09:00"></div>'
 
   function createElement(node) {
     const el = document.createElement('div')
@@ -148,7 +229,30 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     el.innerHTML =
       node.kind === 'text'
         ? `<div class="node-title"><span class="node-file"></span></div><div class="node-body"></div>${TEXT_PORT}<div class="node-handle"></div>`
-        : `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
+        : node.kind === 'entry'
+          ? `<div class="node-title"><span class="node-kind">入口</span></div><div class="node-body"></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
+          : node.kind === 'timer'
+            ? `<div class="node-cmd"></div><div class="node-body"><div class="timer-form">${TIMER_FORM}</div></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
+            : `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
+
+    if (node.kind === 'timer') {
+      const form = el.querySelector('.timer-form')
+      // 控件上的按下不归节点管，否则点一下就开始拖节点
+      form.addEventListener('pointerdown', (event) => event.stopPropagation())
+      form.addEventListener('dblclick', (event) => event.stopPropagation())
+      const count = form.querySelector('.timer-count')
+      const unit = form.querySelector('.timer-unit')
+      const at = form.querySelector('.timer-at')
+      const saveInterval = () => commitSchedule(el, intervalText(count.value, unit.value))
+      for (const button of form.querySelectorAll('.timer-modes button')) {
+        button.addEventListener('click', () =>
+          button.dataset.mode === 'daily' ? commitSchedule(el, dailyText(at.value)) : saveInterval(),
+        )
+      }
+      count.addEventListener('change', saveInterval)
+      unit.addEventListener('change', saveInterval)
+      at.addEventListener('change', () => commitSchedule(el, dailyText(at.value)))
+    }
     el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('dblclick', (event) => {
       event.stopPropagation()
@@ -161,6 +265,10 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       } else if (current.kind === 'extract') {
         // 取法跟命令一样：也是整个正文区当编辑面，上面的取法条先让开
         beginBodyEdit(el, current.pick ?? '', (value) => update((state) => setNodePick(state.graph, current.id, value)), el.querySelector('.node-cmd'))
+      } else if (current.kind === 'timer') {
+        // 定时器：控件就长在节点上，不用再开一层编辑面（双击落在控件上由它自己处理）
+      } else if (current.kind === 'entry') {
+        // 入口上没有可编辑的东西：它只是个标记，跑链走右键菜单
       } else {
         beginBodyEdit(el, current.text, (value) => update((state) => setNodeText(state.graph, current.id, value)))
       }
@@ -289,6 +397,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       openMenu(event.clientX, event.clientY, [
         { label: '新建命令节点', run: () => onNewCommandNode(world) },
         { label: '新建提取节点', run: () => onNewExtractNode(world) },
+        { label: '新建入口节点', run: () => onNewEntryNode(world) },
+        { label: '新建定时器节点', run: () => onNewTimerNode(world) },
       ])
       return
     }
@@ -297,20 +407,19 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     if (!node || nodeEl.classList.contains('editing')) return
     const items = []
     if (node.kind === 'command') {
-      const head = Boolean(node.entry)
-      const chained = Boolean(execIn(getState().graph, node.id))
-      if (head) items.push({ label: '运行链路', run: () => onRunChain(node.id) })
       items.push({ label: '运行命令', run: () => onRunCommand(node.id) })
-      // 有执行入边的节点当不了入口，这条不给，否则「入口」就有两种意思了
-      if (head) items.push({ label: '取消入口', run: () => onToggleEntry(node.id) })
-      else if (!chained) items.push({ label: '设为入口', run: () => onToggleEntry(node.id) })
       items.push({ label: '设置运行目录…', run: () => onSetRunDir(node.id) })
     } else if (node.kind === 'extract') {
       // 提取节点没进程可跑，能做的只有「按现在的值重新取一次」
       items.push({ label: '运行提取', run: () => onRunCommand(node.id) })
-    } else {
+    } else if (node.kind === 'entry') {
+      // 入口是链的起点：从这里出发走完整条链
+      items.push({ label: '运行链路', run: () => onRunChain(node.id) })
+    } else if (node.kind === 'text') {
       items.push({ label: '重命名文件', run: () => beginFileEdit(nodeEl, node) })
     }
+    // 定时器身上没有能点的动作：它的时间表双击就能改，跑不跑是后端的事
+    if (!items.length) return
     openMenu(event.clientX, event.clientY, items)
   })
 

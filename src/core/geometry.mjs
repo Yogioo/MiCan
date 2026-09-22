@@ -29,12 +29,14 @@ export function previewPath(start, cursor) {
   return curve(start, { x: start.x + reach, y: start.y }, { x: cursor.x - reach, y: cursor.y }, cursor)
 }
 
-// 节点右侧的连接点：建边都从这里出发。会跑的节点两个（执行在上、数据在下），文本节点一个。
+// 节点右侧的连接点：建边都从这里出发。会跑的节点两个（执行在上、数据在下），
+// 文本节点一个；入口和定时器只有执行出边，所以也是居中一个。
 // 从哪个点拉出去，就是哪一种边 —— 所以边层不需要再猜。
 const PORT_RATIO = { exec: 0.32, data: 0.68 }
 
 export function portPoint(node, kind = 'data') {
-  const ratio = node.kind === 'text' ? 0.5 : PORT_RATIO[kind] ?? 0.5
+  const single = node.kind === 'text' || node.kind === 'entry' || node.kind === 'timer'
+  const ratio = single ? 0.5 : PORT_RATIO[kind] ?? 0.5
   return { x: node.x + node.w, y: node.y + node.h * ratio }
 }
 

@@ -7,11 +7,11 @@ import {
   removeNode,
   runnable,
   setNodeCwd,
-  setNodeEntry,
   setNodeText,
 } from '../core/graph.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
 import { applyCanvas, applyMachine, canvas, machine } from '../core/settings.mjs'
+import { parseSchedule } from '../core/schedule.mjs'
 import { createHistory, push, redo as redoHistory, undo as undoHistory } from '../core/history.mjs'
 import { createView, zoomAt } from '../core/view.mjs'
 import { mountCanvas } from './canvas.mjs'
@@ -230,7 +230,7 @@ async function loadWorkspace(path) {
   const cache = response.cache ?? {}
   // 元信息在存档里、裸输出在缓存文件里，两份合起来才是一个完整的结果
   if (restored) {
-    for (const node of restored.graph.nodes) if (node.result) node.result.output = cache[node.id] ?? ''
+    for (const node of restored.graph.nodes) if (runnable(node) && node.result) node.result.output = cache[node.id] ?? ''
     applyCanvas(restored.settings) // 跟这份画布走的设置（步数上限这类）跟着存档换
   }
   adoptWorkspace(response.root, restored ?? { graph: createGraph(), view: state.view })
@@ -329,6 +329,9 @@ function stopTicking() {
 
 // 在飞的订阅：runId -> AbortController。只活在内存里，退订用。
 const aborts = new Map()
+// 这里自己发起的运行：它们的结束语要报一句（「链路跑完：3 步」）。
+// 定时器那些不报 —— 一秒一条的话，那句话会一直在工具条上滚动。
+const startedHere = new Set()
 
 // 停止：逐条发到后端 —— 跑的是它，断链也得是它。光断订阅断不掉：
 // 订阅断了只是不看了，链还在后端走（ADR-0009）。
@@ -346,6 +349,7 @@ async function startRun(mode, id) {
   await flush() // 它要读盘上的画布与缓存文件，待写的先写完
   try {
     const { runId } = await api('/api/run', { mode, id })
+    startedHere.add(runId)
     watchRun(runId)
   } catch (error) {
     showMessage(error.message)
@@ -355,17 +359,73 @@ async function startRun(mode, id) {
 const onRunCommand = (id) => startRun('node', id)
 const onRunChain = (id) => startRun('chain', id)
 
-// 网页重开时后端可能还有链在走（页面关着也跑）—— 把在跑的都接上。
-async function resumeRuns() {
-  try {
-    for (const item of (await api('/api/runs', {})).items ?? []) watchRun(item.runId)
-  } catch {
-    // 读不到就当没有在跑的
+// 网页重开时后端可能还有链在走（页面关着也跑），定时器到点也会自己开跑（ADR-0005）——
+// 这两件事都没有人点过「运行」，所以页面自己去问：每几秒拉一次「在跑的 + 刚触发的」。
+// 没见过的 runId 接上事件流（attach 会把历史补上，所以就算这次已经跑完也接得到）；
+// 触发记录摊到定时器节点上，跳过的那一下才看得见。
+const seenRuns = new Set()
+let triggerSeq = 0
+// 页面打开之前响过的，存档里已经带着了（loadWorkspace 把 results 读回来了），不用再摊一遍
+const openedAt = Date.now()
+// 后端触发的运行没人在页面上通知，只能自己去问，所以这一圈一直在转。
+// 问多勤看这份画布上最快的那个定时器：有秒级的就 1 秒问一次，否则 3 秒就够（
+// 在跑的链本来就以秒、分钟计，早 2 秒知道没意义）。
+const POLL_SLOW_MS = 3000
+const POLL_FAST_MS = 1000
+let pollTimer = null
+
+function pollDelay() {
+  let fastest = Infinity
+  for (const node of state.graph.nodes) {
+    if (node.kind !== 'timer') continue
+    const every = parseSchedule(node.schedule)?.every
+    if (every) fastest = Math.min(fastest, every)
   }
+  return fastest < POLL_SLOW_MS ? POLL_FAST_MS : POLL_SLOW_MS
+}
+
+// 自己接着自己排：间隔随时可以变（刚把定时器改成秒级就能跟上）
+async function pollLoop() {
+  await pollRuns()
+  clearTimeout(pollTimer)
+  pollTimer = setTimeout(pollLoop, pollDelay())
+}
+
+async function pollRuns() {
+  if (!state.workspace) return
+  let answer
+  try {
+    answer = await api('/api/runs', {})
+  } catch {
+    return // 后端不在就先不管，下一圈再说
+  }
+  // 在跑的 + 刚跑完的都接上：一秒一条链的时候，只接在跑的根本抓不住。
+  // 页面打开之前就跑完的不用接 —— 它们的结果早就在存档里，loadWorkspace 已经读回来了。
+  for (const item of answer.items ?? []) {
+    const endedAt = item.finishedAt ?? item.startedAt
+    if (!item.active && endedAt < openedAt) continue
+    watchRun(item.runId)
+  }
+  for (const hit of answer.triggers ?? []) {
+    if (hit.seq <= triggerSeq) continue
+    triggerSeq = hit.seq
+    if (hit.at >= openedAt) applyTrigger(hit) // 打开页面之前的那几笔已经在存档里了
+  }
+}
+
+// 定时器的一次触发（含跳过）落在定时器节点上：上次什么时候响的、是跑了还是跳了。
+function applyTrigger(hit) {
+  update((draft) => {
+    const node = findNode(draft.graph, hit.timerId)
+    if (!node || node.kind !== 'timer') return
+    node.result = { at: hit.at, skipped: hit.kind === 'skipped', note: hit.note ?? '' }
+  })
 }
 
 // 按 NDJSON 行读一次运行的事件流，边收边摊到界面上。
 async function watchRun(runId) {
+  if (seenRuns.has(runId)) return // 手动跑的、轮询发现的，只订阅一次
+  seenRuns.add(runId)
   const controller = new AbortController()
   aborts.set(runId, controller)
   try {
@@ -387,8 +447,10 @@ async function watchRun(runId) {
     }
   } catch (error) {
     if (!controller.signal.aborted) showMessage(`运行的订阅断了：${error.message}`)
+    seenRuns.delete(runId) // 订阅断了就让它下一圈再试：链可能还在后端跑着
   } finally {
     aborts.delete(runId)
+    startedHere.delete(runId)
     // 流断了但没收到 end：把这次运行留在节点上的「运行中」收干净
     for (const id of state.runs.get(runId)?.nodes ?? []) state.running.delete(id)
     state.runs.delete(runId)
@@ -445,7 +507,8 @@ function applyRunEvent(runId, event) {
   if (event.t === 'end') {
     state.runs.delete(runId)
     stopTicking()
-    showMessage(event.message)
+    // 只有自己发起的才报结束语：定时器一秒一条，报了就是在工具条上刷屏
+    if (startedHere.delete(runId)) showMessage(event.message)
     update(() => {})
   }
 }
@@ -520,7 +583,8 @@ function applyGraph(snapshot) {
   const kept = new Map(state.graph.nodes.map((node) => [node.id, node.result]))
   const restored = deserialize({ version: FORMAT_VERSION, nodes, edges }).graph
   for (const node of restored.nodes) {
-    if (runnable(node) && kept.get(node.id)) node.result = kept.get(node.id)
+    // 定时器的触发记录也不是被编辑的结构，按 id 接回来
+    if ((runnable(node) || node.kind === 'timer') && kept.get(node.id)) node.result = kept.get(node.id)
   }
   state.graph = restored
   state.selection = null
@@ -576,10 +640,10 @@ const nodes = mountNodes({
   onConnectStart: edges.startConnection,
   onRunCommand,
   onRunChain,
-  // 菜单里只在「没有执行入边」的节点上给这一项，所以 setNodeEntry 不会拒绝
-  onToggleEntry: (id) => update((draft) => setNodeEntry(draft.graph, id, !findNode(draft.graph, id)?.entry)),
   onNewCommandNode: (world) => createNodeAt(world, 'command'),
   onNewExtractNode: (world) => createNodeAt(world, 'extract'),
+  onNewEntryNode: (world) => createNodeAt(world, 'entry'),
+  onNewTimerNode: (world) => createNodeAt(world, 'timer'),
   onSetRunDir: setRunDir,
 })
 const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, stop: stopRunning } })
@@ -588,7 +652,7 @@ const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWor
 loadRecent()
   .then(loadSettings)
   .then(openStartupWorkspace)
-  .then(resumeRuns)
+  .then(pollLoop)
 
 const hint = document.getElementById('hint')
 

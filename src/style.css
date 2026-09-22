@@ -301,10 +301,33 @@ body.space-ready #viewport {
   box-shadow: 0 0 0 2px rgb(224 85 74 / 18%);
 }
 
-/* 入口：链从这里开始 */
-.node.kind-command.is-entry {
+/* 触发节点：入口与定时器只有一根执行出边，链从它们开始 */
+.node.kind-entry,
+.node.kind-timer {
+  background: #fffdf7;
+  border-color: #ded3b8;
+}
+
+.node.kind-entry {
   border-color: #c9a23c;
   box-shadow: inset 3px 0 0 #c9a23c;
+}
+
+.node-kind {
+  color: #8a7a4a;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+.node.kind-entry .node-body {
+  top: 26px;
+  bottom: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #b9ae90;
+  font-size: 11px;
 }
 
 .node-port {
@@ -331,6 +354,12 @@ body.space-ready #viewport {
 }
 
 .node.kind-text .node-port.port-data {
+  top: 50%;
+}
+
+/* 入口和定时器只有执行端口，居中一个 */
+.node.kind-entry .node-port.port-exec,
+.node.kind-timer .node-port.port-exec {
   top: 50%;
 }
 
@@ -415,7 +444,8 @@ body.space-ready #viewport {
 
 /* 会跑的节点：顶部一条主线（常驻，不被输出盖住），底部一条状态，中间是输出 */
 .node.kind-command .node-cmd,
-.node.kind-extract .node-cmd {
+.node.kind-extract .node-cmd,
+.node.kind-timer .node-cmd {
   position: absolute;
   top: 0;
   right: 0;
@@ -450,6 +480,95 @@ body.space-ready #viewport {
   color: #c9bda2;
 }
 
+/* 定时器：顶上写的是人话（「每 30 分钟」），底色跟提取节点一致 */
+.node.kind-timer .node-cmd {
+  background: #fbf7ee;
+}
+
+.node.kind-timer .node-cmd::before {
+  content: '定时 ';
+  color: #c9bda2;
+}
+
+/* 定时器的正文是控件，不是文本。上下两条照样要让开（跟会跑的节点一样） */
+.node.kind-timer .node-body {
+  top: 26px;
+  bottom: 24px;
+  padding: 8px 10px;
+  overflow: auto;
+  color: #6f5f2f;
+  font-family: inherit;
+  white-space: normal;
+}
+
+.timer-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timer-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* 两行里只显当前模式那一行。这一条必须写：.timer-row 的 display 比 [hidden] 的
+   UA 规则权重高，光靠 hidden 属性藏不住。 */
+.timer-row[hidden] {
+  display: none;
+}
+
+/* 模式切换：两个并排的按钮，选中的那个亮着 */
+.timer-modes button {
+  flex: 1;
+  padding: 3px 0;
+  border: 1px solid #e6dcc0;
+  border-radius: 6px;
+  background: #fff;
+  color: #8a7a4a;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.timer-modes button.on {
+  border-color: #c9a23c;
+  background: #fbf3e0;
+  color: #6f5f2f;
+  font-weight: 600;
+}
+
+.timer-form input,
+.timer-form select {
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid #e6dcc0;
+  border-radius: 6px;
+  background: #fff;
+  color: #4a4a45;
+  font: inherit;
+  font-size: 12px;
+  user-select: text;
+}
+
+.timer-form input:focus,
+.timer-form select:focus,
+.timer-modes button:focus-visible {
+  border-color: #c9a23c;
+  outline: none;
+}
+
+.timer-count {
+  width: 60px;
+}
+
+.timer-unit,
+.timer-at {
+  flex: 1;
+}
+
+/* 会跑的节点和定时器：正文区从主线下边到状态脚上边 */
 .node.kind-command .node-body,
 .node.kind-extract .node-body {
   top: 26px;
@@ -476,6 +595,15 @@ body.space-ready #viewport {
 
 .node.kind-extract .node-body.empty.need-cmd::before {
   content: '双击填写取法，如 json:isFull';
+}
+
+/* 时间表认不出来（比如手改坏的存档）：标红，不静默当成没设 */
+.node.kind-timer.invalid {
+  border-color: #e0554a;
+}
+
+.node.kind-timer.invalid .node-cmd {
+  color: #c0483d;
 }
 
 .node.kind-command .node-body.failed {

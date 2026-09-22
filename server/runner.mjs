@@ -42,6 +42,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     if (!run.active) return
     run.active = false
     run.current = null
+    run.finishedAt = Date.now()
     emit(run, { t: 'end', outcome, message, steps: run.step })
     run.subscribers.clear()
     setTimeout(() => runs.delete(run.id), KEEP_DONE_MS).unref()
@@ -189,7 +190,11 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
   // 出边可以成环，所以兜「跑飞了」的只有步数上限（存档配置 canvas.stepLimit）。
   async function walk(run) {
     const limit = canvas.stepLimit
-    let cursor = run.nodeId
+    // 入口节点自己不跑：它只是「从这儿开始」，第一步永远是它那根出边指到的节点。
+    const head = findNode(run.graph, run.nodeId)
+    const first = head?.kind === 'entry' ? execOutAll(run.graph, run.nodeId)[0]?.to : run.nodeId
+    if (!first) return finish(run, 'error', '入口节点还没连到会跑的节点')
+    let cursor = first
     for (let step = 1; step <= limit; step += 1) {
       if (run.stopped) return finish(run, 'stopped', stopMessage(run, step - 1))
       const outcome = await runStep(run, cursor, step)
@@ -216,18 +221,22 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
 
   // ---- 对外的四件事 ----
 
-  async function start({ id, mode = 'node' }) {
+  async function start({ id, mode = 'node', trigger = 'manual' }) {
     const root = getRoot()
     if (!root) throw new Error('先打开一个工作文件夹，命令才有地方跑')
-    if (owns(id)) throw new Error('这个命令还在跑，等它结束')
+    if (owns(id)) throw new Error('这个节点还在跑，等它结束')
     const graph = await loadGraph(root)
     const node = findNode(graph, id)
-    if (!node || !runnable(node)) throw new Error('这个节点运行不了')
-    if (mode === 'chain' && !node.entry) throw new Error('它还不是入口，链的起点得是入口')
+    if (!node) throw new Error('这个节点不在画布上')
+    // 跑链只从入口节点出发：入口自己没有进程，第一步是它那根出边指到的节点
+    if (mode === 'chain' ? node.kind !== 'entry' : !runnable(node)) {
+      throw new Error(mode === 'chain' ? '跑链得从入口节点开始' : '这个节点运行不了')
+    }
 
     const run = {
       id: nextId(),
       mode,
+      trigger, // 谁开的这一次：manual 是人点的，timer 是定时器到点（后端自己开的）
       nodeId: id,
       startedAt: Date.now(),
       step: 0,
@@ -242,7 +251,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       current: null,
     }
     runs.set(run.id, run)
-    emit(run, { t: 'run', runId: run.id, mode, nodeId: id, startedAt: run.startedAt })
+    emit(run, { t: 'run', runId: run.id, mode, nodeId: id, startedAt: run.startedAt, trigger: run.trigger })
     // 不等它跑完：调用方拿 runId 就去订阅事件了
     walk(run).catch((error) => finish(run, 'error', `跑链出错了：${error.message}`))
     return { runId: run.id }
@@ -257,17 +266,21 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     return { ok: true }
   }
 
+  // 在跑的与刚跑完的都列出来：前者是「现在有个链在走」，后者是「刚刚走了这一下」。
+  // 一秒一条链的话，只列在跑的根本抓不住 —— 每 1 秒问一次也只碰得上十分之一。
+  // 刚跑完的会带上 complete 事件（含这次输出），页面迟到一步也能把这一步补上。
   const list = () =>
-    [...runs.values()]
-      .filter((run) => run.active)
-      .map((run) => ({
-        runId: run.id,
-        mode: run.mode,
-        nodeId: run.nodeId,
-        startedAt: run.startedAt,
-        step: run.step,
-        currentNodeId: run.current?.nodeId ?? null,
-      }))
+    [...runs.values()].map((run) => ({
+      runId: run.id,
+      mode: run.mode,
+      trigger: run.trigger,
+      nodeId: run.nodeId,
+      startedAt: run.startedAt,
+      active: run.active,
+      finishedAt: run.finishedAt ?? null,
+      step: run.step,
+      currentNodeId: run.current?.nodeId ?? null,
+    }))
 
   // 订阅：后来的（刷新过的页面）先把历史补上，再跟着看后面的。
   // 返回退订函数；认不出这个 runId 就返回 null（那次运行的记录已经扔了）。
@@ -280,5 +293,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     return () => run.subscribers.delete(send)
   }
 
-  return { start, stop, list, attach, owns, ownsFile, has: (runId) => runs.has(runId) }
+  // 有没有一条从某个入口起跑的链还在走。定时器拿它判断「上一条还没跑完就跳过这一次」。
+  const isRunning = (nodeId) => [...runs.values()].some((run) => run.active && run.nodeId === nodeId)
+
+  return { start, stop, list, attach, owns, ownsFile, isRunning, has: (runId) => runs.has(runId) }
 }
