@@ -7,6 +7,7 @@ import {
   findNode,
   removeEdge,
   removeNode,
+  setNodeCwd,
   setNodeText,
 } from '../core/graph.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
@@ -17,13 +18,14 @@ import { mountCanvas } from './canvas.mjs'
 import { mountEdges } from './edges.mjs'
 import { mountNodes } from './nodes.mjs'
 import { mountToolbar } from './toolbar.mjs'
-import { askDiscard, askWorkspace } from './workspace-dialog.mjs'
+import { askDiscard, askRunDir, askWorkspace } from './workspace-dialog.mjs'
 
 export const state = {
   view: createView(),
   graph: createGraph(),
   selection: null,
   workspace: null, // 工作文件夹的绝对路径，未打开时为 null
+  settings: { cwd: '' }, // 全局运行目录，存在用户目录里，不进存档；空串 = 跟随工作文件夹
   running: new Map(), // 运行中的命令节点：id -> 开跑时间。只活在内存里，不进存档
   dirty: false,
   message: '',
@@ -105,6 +107,16 @@ async function loadRecent() {
     recent = (await api('/api/recent', {})).items ?? []
   } catch {
     recent = []
+  }
+}
+
+// 全局运行目录也由后端记着，跟这台机器走，不进画布存档。
+async function loadSettings() {
+  try {
+    const data = await api('/api/settings', {})
+    update((draft) => { draft.settings = { cwd: typeof data.cwd === 'string' ? data.cwd : '' } })
+  } catch {
+    // 读不到就当没设
   }
 }
 
@@ -237,11 +249,11 @@ function stopTicking() {
 }
 
 // 按 NDJSON 行读 /api/exec 的输出流，边收边回调；返回最后那行终止信息。
-async function streamExec(command, onChunk) {
+async function streamExec(command, cwd, onChunk) {
   const response = await fetch('/api/exec', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ command }),
+    body: JSON.stringify({ command, cwd }),
   })
   if (!response.ok || !response.body) {
     const data = await response.json().catch(() => ({}))
@@ -269,6 +281,37 @@ async function streamExec(command, onChunk) {
   return exit ?? { code: 1, failed: true, output: '连接断了，命令没有回来' }
 }
 
+// 命令的运行目录：节点自己设了就用节点的（覆盖全局），没设就跟全局，都没有就是工作文件夹。
+function runDirOf(node) {
+  return node.cwd || state.settings.cwd || ''
+}
+
+// 全局运行目录：所有命令节点的默认值，节点自己设了就不看它。
+async function setGlobalRunDir() {
+  const current = state.settings.cwd
+  const dir = await askRunDir({ initial: current, hint: '所有命令节点的默认运行目录；留空就用工作文件夹' })
+  if (dir === null || dir === current) return
+  try {
+    const data = await api('/api/settings', { cwd: dir })
+    update((draft) => { draft.settings = { cwd: data.cwd ?? '' } })
+    showMessage(data.cwd ? `全局运行目录：${data.cwd}` : '全局运行目录：跟随工作文件夹')
+  } catch (error) {
+    showMessage(`设置失败：${error.message}`)
+  }
+}
+
+// 单个节点的运行目录：设了就覆盖全局，清空就退回全局。
+async function setRunDir(id) {
+  const node = findNode(state.graph, id)
+  if (!node || node.kind !== 'command') return
+  const dir = await askRunDir({
+    initial: node.cwd ?? '',
+    hint: `命令在这台机器上的绝对路径；留空就跟随全局（${state.settings.cwd || '工作文件夹'}）`,
+  })
+  if (dir === null || dir === (node.cwd ?? '')) return
+  update((draft) => setNodeCwd(draft.graph, id, dir))
+}
+
 async function runCommand(id) {
   const node = findNode(state.graph, id)
   if (!node || node.kind !== 'command') return
@@ -291,8 +334,9 @@ async function runCommand(id) {
     .map((edge) => findNode(state.graph, edge.to))
     .filter((item) => item?.kind === 'text')
 
+  const runDir = runDirOf(node)
   const startedAt = Date.now()
-  showMessage(`运行中：${command.trim()}`)
+  showMessage(`运行中：${command.trim()}${runDir ? `（在 ${runDir}）` : ''}`)
   state.running.set(id, startedAt)
   startTicking()
   update((draft) => {
@@ -318,7 +362,7 @@ async function runCommand(id) {
 
   let record
   try {
-    record = await streamExec(command, onChunk)
+    record = await streamExec(command, runDir, onChunk)
   } catch (error) {
     record = { code: 1, failed: true, output: error.message }
   }
@@ -420,9 +464,11 @@ const nodes = mountNodes({
   onConnectStart: edges.startConnection,
   onRunCommand: runCommand,
   onNewCommandNode: (world) => createNodeAt(world, 'command'),
+  onSetRunDir: setRunDir,
 })
-const toolbar = mountToolbar({ getState: () => state, actions: { save, saveAs, openWorkspace, resetZoom } })
+const toolbar = mountToolbar({ getState: () => state, actions: { save, saveAs, openWorkspace, resetZoom, setGlobalRunDir } })
 loadRecent()
+loadSettings()
 
 const hint = document.getElementById('hint')
 

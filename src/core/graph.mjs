@@ -16,9 +16,9 @@ export function createGraph() {
   return { nodes: [], edges: [] }
 }
 
-export function createNode({ kind = 'text', x = 0, y = 0, w = NODE_DEFAULT_W, h = NODE_DEFAULT_H, text = '', command = '', file = '' } = {}) {
+export function createNode({ kind = 'text', x = 0, y = 0, w = NODE_DEFAULT_W, h = NODE_DEFAULT_H, text = '', command = '', cwd = '', file = '' } = {}) {
   const id = newId('n')
-  if (kind === 'command') return { id, kind, x, y, w, h, command }
+  if (kind === 'command') return { id, kind, x, y, w, h, command, cwd }
   return { id, kind: 'text', x, y, w, h, file: file || `docs/${id}.md`, text }
 }
 
@@ -39,6 +39,13 @@ export function setNodeCommand(graph, id, command) {
   const node = findNode(graph, id)
   if (!node) return
   node.command = command
+}
+
+// 运行目录：空串表示跟随工作文件夹，否则是这台机器上的绝对路径。
+export function setNodeCwd(graph, id, cwd) {
+  const node = findNode(graph, id)
+  if (!node) return
+  node.cwd = cwd
 }
 
 export function findNode(graph, id) {

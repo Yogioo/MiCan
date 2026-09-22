@@ -15,7 +15,9 @@ export function serialize(state) {
       y: node.y,
       w: node.w,
       h: node.h,
-      ...(node.kind === 'command' ? { command: node.command } : { file: node.file, text: node.text }),
+      ...(node.kind === 'command'
+        ? { command: node.command, ...(node.cwd ? { cwd: node.cwd } : {}) }
+        : { file: node.file, text: node.text }),
     })),
     edges: state.graph.edges.map((edge) => ({
       id: edge.id,
@@ -40,7 +42,15 @@ export function deserialize(data) {
     }
     const size = { w: Math.max(NODE_MIN_W, node.w), h: Math.max(NODE_MIN_H, node.h) }
     if (node.kind === 'command') {
-      return { id: node.id, kind: 'command', x: node.x, y: node.y, ...size, command: typeof node.command === 'string' ? node.command : '' }
+      return {
+        id: node.id,
+        kind: 'command',
+        x: node.x,
+        y: node.y,
+        ...size,
+        command: typeof node.command === 'string' ? node.command : '',
+        cwd: typeof node.cwd === 'string' ? node.cwd : '',
+      }
     }
     const file = typeof node.file === 'string' ? node.file : ''
     if (!file || file.startsWith('/') || file.split(/[\\/]/).includes('..')) {

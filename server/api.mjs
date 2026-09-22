@@ -7,6 +7,7 @@ import path from 'node:path'
 const CANVAS_FILE = 'mican.json'
 const DOCS_DIR = 'docs'
 const RECENT_FILE = path.join(os.homedir(), '.mican', 'recent.json')
+const SETTINGS_FILE = path.join(os.homedir(), '.mican', 'settings.json')
 const RECENT_MAX = 8
 const EXEC_TIMEOUT_MS = 120_000
 const EXEC_MAX_OUTPUT = 64 * 1024
@@ -124,8 +125,41 @@ export function createApi(initialRoot) {
     }
   }
 
+  // 全局设置：跟这台机器走，不进画布存档 —— 运行目录是本机路径，存档得能拿到别的机器上打开。
+  async function readSettings() {
+    try {
+      const data = JSON.parse(await fs.readFile(SETTINGS_FILE, 'utf8'))
+      return { cwd: typeof data?.cwd === 'string' ? data.cwd : '' }
+    } catch {
+      return { cwd: '' } // 没设过、或存坏了，都当没设
+    }
+  }
+
+  async function writeSettings(patch) {
+    const next = { ...(await readSettings()), ...patch }
+    await fs.mkdir(path.dirname(SETTINGS_FILE), { recursive: true }).catch(() => {})
+    await fs.writeFile(SETTINGS_FILE, JSON.stringify(next, null, 2), 'utf8')
+    return next
+  }
+
+  // 运行目录只收本机绝对路径：空串算没设，剩下的一律 path.resolve 成绝对路径。
+  function requireAbsolute(value) {
+    const wanted = String(value ?? '').trim()
+    if (!wanted) return ''
+    if (!path.isAbsolute(wanted)) throw new Error(`运行目录要写成绝对路径：${wanted}`)
+    return path.resolve(wanted)
+  }
+
+  // 命令的运行目录：空就是工作文件夹，给了就必须是本机上一个真实存在的文件夹。
+  async function resolveCwd(cwd) {
+    const target = requireAbsolute(cwd)
+    if (!target) return root
+    if (!(await fs.stat(target).catch(() => null))?.isDirectory()) throw new Error(`运行目录不存在：${target}`)
+    return target
+  }
+
   // 运行命令：边跑边把输出按 NDJSON 行推给前端，最后一行是终止信息。
-  function run(command, res) {
+  function run(command, cwd, res) {
     res.writeHead(200, {
       'content-type': 'application/x-ndjson; charset=utf-8',
       'cache-control': 'no-store',
@@ -141,7 +175,7 @@ export function createApi(initialRoot) {
     const shell = IS_WINDOWS ? 'cmd.exe' : '/bin/sh'
     // Windows 默认代码页是 GBK，让子进程尽量说 UTF-8；说不了的下面再兜
     const args = IS_WINDOWS ? ['/d', '/s', '/c', `chcp 65001>nul && ${command}`] : ['-c', command]
-    const child = spawn(shell, args, { cwd: root, windowsHide: true })
+    const child = spawn(shell, args, { cwd, windowsHide: true })
     child.stdin.end() // 给子进程一个 EOF：不关 stdin 时，会读 stdin 的命令（如 pi -p）会一直挂到超时
 
     const decode = createDecoder()
@@ -212,12 +246,17 @@ export function createApi(initialRoot) {
       const body = await readBody(req)
       if (route === '/api/workspace') return send(res, 200, await setWorkspace(body.path, body.mode))
       if (route === '/api/recent') return send(res, 200, { items: await readRecent() })
+      // 不传 cwd 是读，传了（哪怕是空串）就是写
+      if (route === '/api/settings') {
+        if (typeof body.cwd !== 'string') return send(res, 200, await readSettings())
+        return send(res, 200, await writeSettings({ cwd: requireAbsolute(body.cwd) }))
+      }
       if (route === '/api/browse') return send(res, 200, await browse(body.path))
       if (route === '/api/save') {
         await save(body)
         return send(res, 200, { ok: true })
       }
-      if (route === '/api/exec') return run(String(body.command ?? ''), res)
+      if (route === '/api/exec') return run(String(body.command ?? ''), await resolveCwd(body.cwd), res)
       throw new Error(`未知接口：${route}`)
     } catch (error) {
       if (res.headersSent) return res.end() // 已经在推流，报不了 JSON 了

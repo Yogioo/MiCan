@@ -71,41 +71,10 @@ function listBox(label, className) {
   return { wrap, list }
 }
 
-// 问一个工作文件夹路径；回车或「确定」给出路径，取消给 null。error 用来把上一次的失败原因带回来。
-export function askWorkspace({ mode, initial = '', recent = [], error = '' }) {
-  const creating = mode === 'create'
-  const modal = openModal({
-    title: creating ? '另存为' : '打开工作文件夹',
-    okText: creating ? '保存到这里' : '打开',
-  })
-  modal.error.textContent = error
-
-  const row = document.createElement('div')
-  row.className = 'modal-row'
-  const input = document.createElement('input')
-  input.className = 'modal-path'
-  input.type = 'text'
-  input.spellcheck = false
-  input.placeholder = creating ? '新文件夹的绝对路径（不存在或为空）' : '工作文件夹的绝对路径'
-  input.value = initial
+// 路径选择器：一个「浏览…」按钮 + 目录面板（子目录、上一级、盘符），默认收起来不占地方。
+// 两个弹窗（工作文件夹 / 运行目录）共用它，点目录只改输入框的值。
+function attachBrowser(modal, input) {
   const browseButton = button('modal-browse', '浏览…')
-  row.append(input, browseButton)
-
-  const history = listBox('最近打开', 'modal-recent')
-  for (const item of recent) {
-    const li = document.createElement('li')
-    li.textContent = item
-    li.title = item
-    li.addEventListener('click', () => {
-      input.value = item
-      modal.error.textContent = ''
-    })
-    history.list.append(li)
-  }
-  if (recent.length) modal.body.append(row, history.wrap)
-  else modal.body.append(row)
-
-  // 浏览面板：目录列表 + 上一级 + 盘符，默认收起来不占地方
   const browser = document.createElement('div')
   browser.className = 'modal-browser hidden'
   browser.innerHTML =
@@ -115,8 +84,6 @@ export function askWorkspace({ mode, initial = '', recent = [], error = '' }) {
   const pick = button('browser-pick primary', '选这个文件夹')
   browser.querySelector('.browser-head').prepend(up)
   browser.append(pick)
-
-  modal.body.append(browser)
 
   const dirs = browser.querySelector('.browser-dirs')
   const roots = browser.querySelector('.browser-roots')
@@ -180,6 +147,45 @@ export function askWorkspace({ mode, initial = '', recent = [], error = '' }) {
     input.focus()
   })
 
+  return { browseButton, browser }
+}
+
+// 问一个工作文件夹路径；回车或「确定」给出路径，取消给 null。error 用来把上一次的失败原因带回来。
+export function askWorkspace({ mode, initial = '', recent = [], error = '' }) {
+  const creating = mode === 'create'
+  const modal = openModal({
+    title: creating ? '另存为' : '打开工作文件夹',
+    okText: creating ? '保存到这里' : '打开',
+  })
+  modal.error.textContent = error
+
+  const row = document.createElement('div')
+  row.className = 'modal-row'
+  const input = document.createElement('input')
+  input.className = 'modal-path'
+  input.type = 'text'
+  input.spellcheck = false
+  input.placeholder = creating ? '新文件夹的绝对路径（不存在或为空）' : '工作文件夹的绝对路径'
+  input.value = initial
+  const { browseButton, browser } = attachBrowser(modal, input)
+  row.append(input, browseButton)
+
+  const history = listBox('最近打开', 'modal-recent')
+  for (const item of recent) {
+    const li = document.createElement('li')
+    li.textContent = item
+    li.title = item
+    li.addEventListener('click', () => {
+      input.value = item
+      modal.error.textContent = ''
+    })
+    history.list.append(li)
+  }
+  if (recent.length) modal.body.append(row, history.wrap)
+  else modal.body.append(row)
+
+  modal.body.append(browser)
+
   const submit = () => {
     const value = input.value.trim()
     if (!value) {
@@ -189,6 +195,38 @@ export function askWorkspace({ mode, initial = '', recent = [], error = '' }) {
     modal.finish(value)
   }
   input.addEventListener('input', () => { modal.error.textContent = '' })
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    submit()
+  })
+  modal.ok.addEventListener('click', submit)
+
+  input.focus()
+  if (initial) input.select()
+  return modal.promise
+}
+
+// 问一个运行目录（全局的、单个命令节点的都走它）：空串表示用回上一层默认，取消给 null。
+export function askRunDir({ initial = '', hint = '' } = {}) {
+  const modal = openModal({ title: '运行目录', okText: '确定' })
+  const label = document.createElement('div')
+  label.className = 'modal-label'
+  label.textContent = hint
+
+  const row = document.createElement('div')
+  row.className = 'modal-row'
+  const input = document.createElement('input')
+  input.className = 'modal-path'
+  input.type = 'text'
+  input.spellcheck = false
+  input.placeholder = '绝对路径，例如 D:\\work\\demo'
+  input.value = initial
+  const { browseButton, browser } = attachBrowser(modal, input)
+  row.append(input, browseButton)
+  modal.body.append(label, row, browser)
+
+  const submit = () => modal.finish(input.value.trim())
   input.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return
     event.preventDefault()

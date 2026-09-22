@@ -1,5 +1,5 @@
 // 节点层：渲染两类节点，处理拖动、缩放、选中、编辑、右键菜单。
-import { moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeFile, setNodeText } from '../core/graph.mjs'
+import { moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeCwd, setNodeFile, setNodeText } from '../core/graph.mjs'
 import { toWorld } from '../core/view.mjs'
 import { renderMarkdown } from './markdown.mjs'
 
@@ -7,7 +7,7 @@ const DRAG_THRESHOLD = 4 // 屏幕像素：移动超过它才算拖动，否则�
 
 const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
 
-export function mountNodes({ getState, update, onConnectStart, onRunCommand, onNewCommandNode }) {
+export function mountNodes({ getState, update, onConnectStart, onRunCommand, onNewCommandNode, onSetRunDir }) {
   const layer = document.getElementById('nodes')
   const viewport = document.getElementById('viewport')
   const elements = new Map()
@@ -59,9 +59,13 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     const running = state.running.has(node.id)
     const cmd = el.querySelector('.node-cmd')
     if (cmd.textContent !== node.command) cmd.textContent = node.command
-    // 命令里有 {{变量}} 时节点上留的是模板；鼠标停上去看实际跑了哪条
+    // 命令里有 {{变量}} 时节点上留的是模板；鼠标停上去看实际跑了哪条、在哪个目录跑
+    const runDir = node.cwd || state.settings.cwd || '' // 节点自己的覆盖全局；都没有就跟着工作文件夹
+    const notes = []
+    if (runDir) notes.push(`运行目录：${runDir}${node.cwd ? '（节点自己设的）' : '（全局）'}`)
     const resolved = node.result?.command
-    cmd.title = resolved && resolved !== node.command ? `实际执行：${resolved}` : ''
+    if (resolved && resolved !== node.command) notes.push(`实际执行：${resolved}`)
+    cmd.title = notes.join('\n')
 
     // 运行中看增量、跑完看结果，都没有就空着 —— 命令始终在上面那条里
     const content = running ? node.live ?? '' : node.result ? node.result.output : ''
@@ -78,9 +82,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     }
     body.classList.toggle('need-cmd', !node.command) // 还没写命令时，占位文字改成提示怎么填
     el.classList.toggle('running', running)
-    el.querySelector('.node-foot').textContent = running
-      ? `运行中 · ${seconds(Date.now() - state.running.get(node.id))}`
-      : describeResult(node.result)
+    // 设了运行目录（全局或节点）就在脚上带出来，不然跑完就忘了
+    const foot = [running ? `运行中 · ${seconds(Date.now() - state.running.get(node.id))}` : describeResult(node.result), runDir && `@ ${runDir}`]
+    el.querySelector('.node-foot').textContent = foot.filter(Boolean).join(' · ')
   }
 
   function describeResult(result) {
@@ -241,7 +245,10 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     if (!node || nodeEl.classList.contains('editing')) return
     const items =
       node.kind === 'command'
-        ? [{ label: '运行命令', run: () => onRunCommand(node.id) }]
+        ? [
+            { label: '运行命令', run: () => onRunCommand(node.id) },
+            { label: '设置运行目录…', run: () => onSetRunDir(node.id) },
+          ]
         : [{ label: '重命名文件', run: () => beginFileEdit(nodeEl, node) }]
     openMenu(event.clientX, event.clientY, items)
   })

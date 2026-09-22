@@ -54,6 +54,11 @@ body {
   background: #f0f0ec;
 }
 
+/* 设了全局运行目录的按钮 */
+#toolbar button.set {
+  color: #4a7fe0;
+}
+
 #save-dot {
   width: 7px;
   height: 7px;
