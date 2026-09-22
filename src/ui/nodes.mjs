@@ -74,7 +74,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
 
     // 运行中看增量、跑完看结果，都没有就空着 —— 命令始终在上面那条里
     const content = running ? node.live ?? '' : node.result ? node.result.output : ''
-    const failed = !running && Boolean(node.result?.failed)
+    // 停止不算命令自己失败：留到一半的输出该照常看，不染红
+    const failed = !running && Boolean(node.result?.failed) && !node.result?.stopped
     const body = el.querySelector('.node-body')
     if (el._content !== content || el._failed !== failed) {
       const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24
@@ -107,7 +108,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     if (!result) return ''
     const time = new Date(result.at).toTimeString().slice(0, 8)
     const flags = [result.timedOut && '超时', result.truncated && '输出被截断'].filter(Boolean)
-    const parts = [`退出码 ${result.code}`, ...flags]
+    const parts = [result.stopped ? '已停止' : `退出码 ${result.code}`, ...flags]
     if (Number.isFinite(result.elapsed)) parts.push(`耗时 ${seconds(result.elapsed)}`)
     return [...parts, time].join(' · ')
   }

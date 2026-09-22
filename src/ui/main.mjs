@@ -36,6 +36,9 @@ export const state = {
   // 跟机器走的那些值（命令行、超时、界面手感）不住在这儿：它们住在 core/settings.mjs，现读现用；
   // 运行目录属于画布，在 canvas.cwd
   running: new Map(), // 运行中的命令节点：id -> 开跑时间。只活在内存里，不进存档
+  // 正在走的链路：{ stopped }。链路不是进程 —— 两次命令之间的空档它也在，
+  // 所以右下角那个停止按钮不会一闪一闪，停止的意思也不只是「把当前这个命令断掉」。
+  chain: null,
   saving: false, // 有一次落盘还在路上
   message: '',
 }
@@ -331,12 +334,23 @@ function stopTicking() {
   ticking = null
 }
 
+// 在飞的命令的中止把手：节点 id -> AbortController。只活在内存里。
+const aborts = new Map()
+
+// 停止：把在飞的命令全断掉 —— 连着的那条 HTTP 一断，后端就把整棵进程树收掉
+// （server/api.mjs 的 res.on('close')）。链路另外记一笔，它下一圈开头会自己停。
+function stopRunning() {
+  if (state.chain) state.chain.stopped = true
+  for (const controller of aborts.values()) controller.abort()
+}
+
 // 按 NDJSON 行读 /api/exec 的输出流，边收边回调；返回最后那行终止信息。
-async function streamExec(command, cwd, onChunk) {
+async function streamExec(command, cwd, onChunk, signal) {
   const response = await fetch('/api/exec', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ command, cwd }),
+    signal,
   })
   if (!response.ok || !response.body) {
     const data = await response.json().catch(() => ({}))
@@ -426,6 +440,8 @@ async function runNode(id) {
 
   const runDir = runDirOf(node)
   const startedAt = Date.now()
+  const controller = new AbortController()
+  aborts.set(id, controller)
   state.running.set(id, startedAt)
   startTicking()
   update((draft) => {
@@ -453,11 +469,15 @@ async function runNode(id) {
 
   let record
   try {
-    record = await streamExec(command, runDir, onChunk)
+    record = await streamExec(command, runDir, onChunk, controller.signal)
   } catch (error) {
-    record = { code: 1, failed: true, output: error.message }
+    // 点了停止：这不算命令自己失败，单独记一笔，节点上写「已停止」而不是退出码
+    record = controller.signal.aborted
+      ? { code: 1, failed: true, stopped: true, output: '' }
+      : { code: 1, failed: true, output: error.message }
   }
 
+  aborts.delete(id)
   state.running.delete(id)
   stopTicking()
 
@@ -465,6 +485,7 @@ async function runNode(id) {
   const result = {
     code: record.code,
     failed: Boolean(record.failed),
+    stopped: Boolean(record.stopped),
     timedOut: Boolean(record.timedOut),
     truncated: Boolean(record.truncated),
     output: text,
@@ -489,7 +510,8 @@ async function runCommand(id) {
   await flush()
   const outcome = await runOne(id)
   if (!outcome.ok) return showMessage(outcome.reason)
-  if (outcome.result.failed) showMessage(`退出码 ${outcome.result.code}，没有覆写下游文本节点`)
+  if (outcome.result.stopped) showMessage('已停止，没有覆写下游文本节点')
+  else if (outcome.result.failed) showMessage(`退出码 ${outcome.result.code}，没有覆写下游文本节点`)
   else if (outcome.targets === 0) showMessage('没有下游文本节点，输出只显示在节点上')
   else showMessage(`输出已灌给 ${outcome.targets} 个下游文本节点`)
   await saveNow() // 跑完立刻落盘：缓存文件得马上在盘上，下游和断电都等着它
@@ -542,24 +564,33 @@ async function runExtract(id) {
 // 出边可以成环，所以「后面还有几个没跑」在这儿算不出来 —— 兜「跑飞了」只有步数上限。
 async function runChain(entryId) {
   await flush() // 第一步就要读盘上的东西，待写的先写完
-  let cursor = entryId
-  for (let index = 0; index < canvas.stepLimit; index += 1) {
-    const outcome = await runOne(cursor)
-    if (!outcome.ok) return showMessage(`第 ${index + 1} 步没跑起来：${outcome.reason}`)
-    await saveNow() // 走一步落一次盘：下一个节点要读它的缓存文件，断在这儿也不白跑
-    if (outcome.result.failed) return showMessage(`第 ${index + 1} 步退出码 ${outcome.result.code}，链停在这儿`)
-
-    const value = (outcome.result.output ?? '').trim()
-    const next = routeFrom(state.graph, cursor, value)
-    if (next.done) return showMessage(`链路跑完：${index + 1} 步，走到一个没有出边的节点`)
-    if (next.stuck) {
-      // 它本来可能走的那几根都记上「未运行」，不然分不清「没走」和「走了是空的」
-      markSkipped(execOutAll(state.graph, cursor).map((edge) => edge.to))
-      return showMessage(`第 ${index + 1} 步的值是「${clip(value)}」，出边上的标签是「${next.labels.join('、')}」，一根都不匹配，停在这儿`)
+  // 停止按钮是全局的一个，但「停」对链路来说不只是把当前那个命令断掉：中间的空档里也没有东西在跑，
+  // 不记这笔的话，点了停止下一圈又把下一个节点跑起来了。所以链路自己带一个标记，每圈开头看一眼。
+  state.chain = { stopped: false }
+  try {
+    let cursor = entryId
+    for (let index = 0; index < canvas.stepLimit; index += 1) {
+      if (state.chain.stopped) return showMessage(`已停止：跑了 ${index} 步`)
+      const outcome = await runOne(cursor)
+      if (!outcome.ok) return showMessage(`第 ${index + 1} 步没跑起来：${outcome.reason}`)
+      await saveNow() // 走一步落一次盘：下一个节点要读它的缓存文件，断在这儿也不白跑
+      if (state.chain.stopped) return showMessage(`已停止：跑了 ${index + 1} 步`)
+      if (outcome.result.failed) return showMessage(`第 ${index + 1} 步退出码 ${outcome.result.code}，链停在这儿`)
+      const value = (outcome.result.output ?? '').trim()
+      const next = routeFrom(state.graph, cursor, value)
+      if (next.done) return showMessage(`链路跑完：${index + 1} 步，走到一个没有出边的节点`)
+      if (next.stuck) {
+        // 它本来可能走的那几根都记上「未运行」，不然分不清「没走」和「走了是空的」
+        markSkipped(execOutAll(state.graph, cursor).map((edge) => edge.to))
+        return showMessage(`第 ${index + 1} 步的值是「${clip(value)}」，出边上的标签是「${next.labels.join('、')}」，一根都不匹配，停在这儿`)
+      }
+      cursor = next.to
     }
-    cursor = next.to
+    return showMessage(`走了 ${canvas.stepLimit} 步还没停，多半是环没兜住，停下来别再走了`)
+  } finally {
+    state.chain = null
+    update(() => {}) // 光把它置空不会重绘，右下角那个按钮收不掉
   }
-  return showMessage(`走了 ${canvas.stepLimit} 步还没停，多半是环没兜住，停下来别再走了`)
 }
 
 // 提示里别把一整份输出塞进去
@@ -654,7 +685,7 @@ const nodes = mountNodes({
   onNewExtractNode: (world) => createNodeAt(world, 'extract'),
   onSetRunDir: setRunDir,
 })
-const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings } })
+const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, stop: stopRunning } })
 // 设置要先读到（全局运行目录、启动要打开哪个工作文件夹都在里面），所以这两句串起来做
 loadRecent()
   .then(loadSettings)
