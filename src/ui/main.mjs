@@ -22,6 +22,7 @@ export const state = {
   graph: createGraph(),
   selection: null,
   workspace: null, // 工作文件夹的绝对路径，未打开时为 null
+  running: new Map(), // 运行中的命令节点：id -> 开跑时间。只活在内存里，不进存档
   dirty: false,
   message: '',
 }
@@ -189,32 +190,121 @@ function clearSelection() {
 
 // ---- 运行命令 ----
 
+let ticking = null
+
+// 秒表：靠定期整帧重绘刷新脚上的秒数，没有命令在跑就停掉。
+function startTicking() {
+  if (ticking) return
+  ticking = setInterval(() => update(() => {}), 500)
+}
+
+function stopTicking() {
+  if (state.running.size || !ticking) return
+  clearInterval(ticking)
+  ticking = null
+}
+
+// 按 NDJSON 行读 /api/exec 的输出流，边收边回调；返回最后那行终止信息。
+async function streamExec(command, onChunk) {
+  const response = await fetch('/api/exec', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ command }),
+  })
+  if (!response.ok || !response.body) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(data.error ?? `请求失败（${response.status}）`)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let exit = null
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    // JSON 里的换行是转义过的，按真换行切行是安全的
+    for (let index = buffer.indexOf('\n'); index >= 0; index = buffer.indexOf('\n')) {
+      const line = buffer.slice(0, index)
+      buffer = buffer.slice(index + 1)
+      if (!line.trim()) continue
+      const message = JSON.parse(line)
+      if (message.type === 'chunk') onChunk(message.data)
+      else if (message.type === 'exit') exit = message
+    }
+  }
+  return exit ?? { code: 1, failed: true, output: '连接断了，命令没有回来' }
+}
+
 async function runCommand(id) {
   const node = findNode(state.graph, id)
   if (!node || node.kind !== 'command') return
   if (!state.workspace) return showMessage('先保存或打开一个工作文件夹，命令才有地方跑')
   if (!node.command.trim()) return showMessage('这个命令节点还没有命令')
+  if (state.running.has(id)) return showMessage('这个命令还在跑，等它结束')
 
   const targets = state.graph.edges
     .filter((edge) => edge.from === id)
     .map((edge) => findNode(state.graph, edge.to))
     .filter((item) => item?.kind === 'text')
 
+  const startedAt = Date.now()
   showMessage(`运行中：${node.command.trim()}`)
-  let result
-  try {
-    result = await api('/api/exec', { command: node.command })
-  } catch (error) {
-    return showMessage(`运行失败：${error.message}`)
-  }
-
-  const record = { ...result, at: Date.now() }
+  state.running.set(id, startedAt)
+  startTicking()
   update((draft) => {
-    findNode(draft.graph, id).result = record // 运行结果不进存档，撤销后就没了
-    if (!record.failed) for (const item of targets) setNodeText(draft.graph, item.id, record.output)
+    const target = findNode(draft.graph, id)
+    target.result = null // 上次输出先清掉，节点上只留命令，输出从头攒
+    target.live = ''
   })
 
-  if (record.failed) showMessage(`退出码 ${record.code}，没有覆写下游文本节点`)
+  // 输出一块块来：先攒进 live，重绘按帧合并，别让快命令把渲染拖住
+  let output = ''
+  let waitingFrame = false
+  const onChunk = (text) => {
+    output += text
+    const target = findNode(state.graph, id)
+    if (target) target.live = output
+    if (waitingFrame) return
+    waitingFrame = true
+    requestAnimationFrame(() => {
+      waitingFrame = false
+      update(() => {})
+    })
+  }
+
+  let record
+  try {
+    record = await streamExec(node.command, onChunk)
+  } catch (error) {
+    record = { code: 1, failed: true, output: error.message }
+  }
+
+  state.running.delete(id)
+  stopTicking()
+
+  const text = output || record.output || ''
+  const result = {
+    code: record.code,
+    failed: Boolean(record.failed),
+    timedOut: Boolean(record.timedOut),
+    truncated: Boolean(record.truncated),
+    output: text,
+    at: Date.now(),
+    elapsed: Date.now() - startedAt, // 跑完也留着，脚上照样看得到跑了多久
+  }
+  update((draft) => {
+    const target = findNode(draft.graph, id)
+    // 跑的时候节点可能已经被删了或被撤销掉了
+    if (target) {
+      target.result = result // 运行结果不进存档，撤销后就没了
+      target.live = ''
+    }
+    if (!result.failed) for (const item of targets) setNodeText(draft.graph, item.id, text)
+  })
+
+  if (result.failed) showMessage(`退出码 ${result.code}，没有覆写下游文本节点`)
   else if (targets.length === 0) showMessage('没有下游文本节点，输出只显示在节点上')
   else showMessage(`输出已灌给 ${targets.length} 个下游文本节点，保存后落盘`)
 }

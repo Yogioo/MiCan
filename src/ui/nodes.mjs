@@ -5,6 +5,8 @@ import { renderMarkdown } from './markdown.mjs'
 
 const DRAG_THRESHOLD = 4 // 屏幕像素：移动超过它才算拖动，否则算点击选中
 
+const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
+
 export function mountNodes({ getState, update, onConnectStart, onRunCommand, onNewCommandNode }) {
   const layer = document.getElementById('nodes')
   const viewport = document.getElementById('viewport')
@@ -26,7 +28,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
       el.style.height = `${node.h}px`
       el.classList.toggle('selected', state.selection?.id === node.id)
       // 编辑中的节点正文归输入框管，这里不碰
-      if (node.kind === 'command') renderCommand(el, node)
+      if (node.kind === 'command') renderCommand(el, node, state)
       else renderText(el, node)
     }
     for (const [id, el] of elements) {
@@ -53,25 +55,38 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     el._text = node.text
   }
 
-  function renderCommand(el, node) {
-    const content = node.result ? node.result.output : node.command
-    const failed = Boolean(node.result?.failed)
+  function renderCommand(el, node, state) {
+    const running = state.running.has(node.id)
+    const cmd = el.querySelector('.node-cmd')
+    if (cmd.textContent !== node.command) cmd.textContent = node.command
+
+    // 运行中看增量、跑完看结果，都没有就空着 —— 命令始终在上面那条里
+    const content = running ? node.live ?? '' : node.result ? node.result.output : ''
+    const failed = !running && Boolean(node.result?.failed)
+    const body = el.querySelector('.node-body')
     if (el._content !== content || el._failed !== failed) {
-      const body = el.querySelector('.node-body')
+      const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24
       body.textContent = content
       body.classList.toggle('empty', !content)
       body.classList.toggle('failed', failed)
+      if (atBottom) body.scrollTop = body.scrollHeight // 流式输出跟着尾巴走，但不抢用户翻上去的手
       el._content = content
       el._failed = failed
     }
-    el.querySelector('.node-foot').textContent = describeResult(node.result)
+    body.classList.toggle('need-cmd', !node.command) // 还没写命令时，占位文字改成提示怎么填
+    el.classList.toggle('running', running)
+    el.querySelector('.node-foot').textContent = running
+      ? `运行中 · ${seconds(Date.now() - state.running.get(node.id))}`
+      : describeResult(node.result)
   }
 
   function describeResult(result) {
     if (!result) return ''
     const time = new Date(result.at).toTimeString().slice(0, 8)
     const flags = [result.timedOut && '超时', result.truncated && '输出被截断'].filter(Boolean)
-    return [`退出码 ${result.code}`, ...flags, time].join(' · ')
+    const parts = [`退出码 ${result.code}`, ...flags]
+    if (Number.isFinite(result.elapsed)) parts.push(`耗时 ${seconds(result.elapsed)}`)
+    return [...parts, time].join(' · ')
   }
 
   function createElement(node) {
@@ -79,7 +94,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     el.className = `node kind-${node.kind}`
     el.innerHTML =
       node.kind === 'command'
-        ? '<div class="node-body mono"></div><div class="node-foot"></div><div class="node-port"></div><div class="node-handle"></div>'
+        ? '<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div><div class="node-port"></div><div class="node-handle"></div>'
         : '<div class="node-title"><span class="node-file"></span></div><div class="node-body"></div><div class="node-port"></div><div class="node-handle"></div>'
     el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('dblclick', (event) => {
@@ -88,7 +103,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
       const current = getState().graph.nodes.find((item) => item.id === el.dataset.id)
       if (!current) return
       if (current.kind === 'command') {
-        beginBodyEdit(el, current.command, (value) => update((state) => setNodeCommand(state.graph, current.id, value)))
+        // 编辑命令用的是整个正文区（够大），上面的命令条先让开
+        beginBodyEdit(el, current.command, (value) => update((state) => setNodeCommand(state.graph, current.id, value)), el.querySelector('.node-cmd'))
       } else {
         beginBodyEdit(el, current.text, (value) => update((state) => setNodeText(state.graph, current.id, value)))
       }
@@ -106,7 +122,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
   // ---- 编辑 ----
 
   // 正文：界面与渲染态完全同位同字号，失焦保存、Esc 取消。
-  function beginBodyEdit(el, original, commitText) {
+  function beginBodyEdit(el, original, commitText, hideEl = null) {
     if (el.classList.contains('editing')) return
     const body = el.querySelector('.node-body')
     const input = document.createElement('textarea')
@@ -117,6 +133,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     el.classList.add('editing')
     body.textContent = ''
     body.append(input)
+    if (hideEl) hideEl.hidden = true
     input.focus()
     input.setSelectionRange(original.length, original.length)
 
@@ -127,6 +144,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
       const value = input.value
       input.remove()
       el.classList.remove('editing')
+      if (hideEl) hideEl.hidden = false
       el._text = null // 强制重画正文
       el._content = null
       if (commit && value !== original) commitText(value)

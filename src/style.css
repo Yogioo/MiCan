@@ -329,8 +329,34 @@ body.space-ready #viewport {
   user-select: text;
 }
 
-/* 命令节点：底部一条状态，正文从它上面结束 */
+/* 命令节点：顶部一条命令（常驻，不被输出盖住），底部一条状态，中间是输出 */
+.node.kind-command .node-cmd {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 26px;
+  padding: 0 var(--pad-x);
+  overflow: hidden;
+  border-bottom: 1px solid #f0f0ec;
+  border-radius: 10px 10px 0 0;
+  background: #fafaf8;
+  color: #4a4a45;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 26px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+
+.node.kind-command .node-cmd::before {
+  content: '$ ';
+  color: #c6c6c0;
+}
+
 .node.kind-command .node-body {
+  top: 26px;
   bottom: 24px;
   padding-top: 10px;
   font-family: Consolas, 'Courier New', monospace;
@@ -341,11 +367,31 @@ body.space-ready #viewport {
 }
 
 .node.kind-command .node-body.empty::before {
+  content: '还没有输出';
+}
+
+.node.kind-command .node-body.empty.need-cmd::before {
   content: '双击填写命令';
 }
 
 .node.kind-command .node-body.failed {
   color: #c0483d;
+}
+
+/* 运行中：边框呼吸 + 脚上的秒表 */
+.node.kind-command.running {
+  border-color: #4a7fe0;
+  animation: node-running 1.4s ease-in-out infinite;
+}
+
+.node.kind-command.running .node-foot {
+  color: #4a7fe0;
+}
+
+@keyframes node-running {
+  50% {
+    box-shadow: 0 0 0 3px rgb(74 127 224 / 20%);
+  }
 }
 
 .node-foot {
