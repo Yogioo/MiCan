@@ -1,4 +1,5 @@
-// 工具条：保存状态、保存、另存为、打开、运行目录、回 100%、工作文件夹、当前缩放比。
+// 工具条：落盘状态、另存为、打开、运行目录、回 100%、工作文件夹、当前缩放比。
+// 没有「保存」按钮：改动一结束就落盘了（ADR-0003），那个点只表示「有写还在路上」。
 export function mountToolbar({ getState, actions }) {
   const dot = document.getElementById('save-dot')
   const zoom = document.getElementById('zoom-value')
@@ -6,15 +7,14 @@ export function mountToolbar({ getState, actions }) {
   const workspace = document.getElementById('workspace-path')
   const runDir = document.getElementById('btn-rundir')
 
-  document.getElementById('btn-save').addEventListener('click', actions.save)
   document.getElementById('btn-save-as').addEventListener('click', actions.saveAs)
   document.getElementById('btn-open').addEventListener('click', actions.openWorkspace)
   document.getElementById('btn-rundir').addEventListener('click', actions.setGlobalRunDir)
   document.getElementById('btn-reset').addEventListener('click', actions.resetZoom)
 
   function render(state) {
-    dot.classList.toggle('dirty', state.dirty)
-    dot.title = state.dirty ? '有未保存的改动' : '已保存'
+    dot.classList.toggle('saving', state.saving)
+    dot.title = state.saving ? '正在落盘…' : '改动即落盘'
     zoom.textContent = `${Math.round(state.view.scale * 100)}%`
     message.textContent = state.message
     workspace.textContent = state.workspace ?? '未打开工作文件夹'

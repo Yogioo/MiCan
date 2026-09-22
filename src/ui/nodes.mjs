@@ -1,5 +1,5 @@
 // 节点层：渲染两类节点，处理拖动、缩放、选中、编辑、右键菜单。
-import { moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeCwd, setNodeFile, setNodeText } from '../core/graph.mjs'
+import { execIn, moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeCwd, setNodeFile, setNodeText } from '../core/graph.mjs'
 import { toWorld } from '../core/view.mjs'
 import { renderMarkdown } from './markdown.mjs'
 
@@ -10,7 +10,7 @@ const isAbsolutePath = (value) => /^(?:[a-zA-Z]:[\\/]|[\\/])/.test(value)
 
 const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
 
-export function mountNodes({ getState, update, onConnectStart, onRunCommand, onNewCommandNode, onSetRunDir }) {
+export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onToggleEntry, onNewCommandNode, onSetRunDir }) {
   const layer = document.getElementById('nodes')
   const viewport = document.getElementById('viewport')
   const elements = new Map()
@@ -87,10 +87,20 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     }
     body.classList.toggle('need-cmd', !node.command) // 还没写命令时，占位文字改成提示怎么填
     el.classList.toggle('running', running)
+    el.classList.toggle('is-entry', Boolean(node.entry)) // 入口：链从这里开始
     // 设了运行目录（全局或节点）就在脚上带出来，不然跑完就忘了
     const at = own === '.' ? '工作文件夹' : own || runDir
-    const foot = [running ? `运行中 · ${seconds(Date.now() - state.running.get(node.id))}` : describeResult(node.result), at && `@ ${at}`]
-    el.querySelector('.node-foot').textContent = foot.filter(Boolean).join(' · ')
+    const foot = []
+    if (node.entry) foot.push('入口')
+    if (running) foot.push(`运行中 · ${seconds(Date.now() - state.running.get(node.id))}`)
+    else {
+      // 「没跑」和「跑出来是空的」得分得清，所以未运行跟上次的结果并列显示
+      if (node.skipped) foot.push('未运行')
+      const known = describeResult(node.result)
+      if (known) foot.push(known)
+    }
+    if (at) foot.push(`@ ${at}`)
+    el.querySelector('.node-foot').textContent = foot.join(' · ')
   }
 
   function describeResult(result) {
@@ -102,13 +112,19 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     return [...parts, time].join(' · ')
   }
 
+  // 连接点：命令节点两个（执行在上、数据在下），文本节点一个。从哪个点拉出去就是哪一种边。
+  const COMMAND_PORTS =
+    '<div class="node-port port-exec" data-kind="exec" title="执行端口：连下一个命令节点"></div>' +
+    '<div class="node-port port-data" data-kind="data" title="数据端口：连文本节点或命令节点"></div>'
+  const TEXT_PORT = '<div class="node-port port-data" data-kind="data" title="数据端口：把正文喂给命令节点"></div>'
+
   function createElement(node) {
     const el = document.createElement('div')
     el.className = `node kind-${node.kind}`
     el.innerHTML =
       node.kind === 'command'
-        ? '<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div><div class="node-port"></div><div class="node-handle"></div>'
-        : '<div class="node-title"><span class="node-file"></span></div><div class="node-body"></div><div class="node-port"></div><div class="node-handle"></div>'
+        ? `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${COMMAND_PORTS}<div class="node-handle"></div>`
+        : `<div class="node-title"><span class="node-file"></span></div><div class="node-body"></div>${TEXT_PORT}<div class="node-handle"></div>`
     el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('dblclick', (event) => {
       event.stopPropagation()
@@ -249,13 +265,19 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
 
     const node = getState().graph.nodes.find((item) => item.id === nodeEl.dataset.id)
     if (!node || nodeEl.classList.contains('editing')) return
-    const items =
-      node.kind === 'command'
-        ? [
-            { label: '运行命令', run: () => onRunCommand(node.id) },
-            { label: '设置运行目录…', run: () => onSetRunDir(node.id) },
-          ]
-        : [{ label: '重命名文件', run: () => beginFileEdit(nodeEl, node) }]
+    const items = []
+    if (node.kind === 'command') {
+      const head = Boolean(node.entry)
+      const chained = Boolean(execIn(getState().graph, node.id))
+      if (head) items.push({ label: '运行链路', run: () => onRunChain(node.id) })
+      items.push({ label: '运行命令', run: () => onRunCommand(node.id) })
+      // 有执行入边的节点当不了入口，这条不给，否则「入口」就有两种意思了
+      if (head) items.push({ label: '取消入口', run: () => onToggleEntry(node.id) })
+      else if (!chained) items.push({ label: '设为入口', run: () => onToggleEntry(node.id) })
+      items.push({ label: '设置运行目录…', run: () => onSetRunDir(node.id) })
+    } else {
+      items.push({ label: '重命名文件', run: () => beginFileEdit(nodeEl, node) })
+    }
     openMenu(event.clientX, event.clientY, items)
   })
 
@@ -279,10 +301,11 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onN
     const node = getState().graph.nodes.find((item) => item.id === id)
     if (!node) return
 
-    // 右侧连接点：交给边层去拉一条线
-    if (event.target.closest('.node-port')) {
+    // 连接点：交给边层去拉一条线，拉哪一种由端口决定
+    const port = event.target.closest('.node-port')
+    if (port) {
       event.stopPropagation()
-      onConnectStart(id, event)
+      onConnectStart(id, port.dataset.kind ?? 'data', event)
       return
     }
 

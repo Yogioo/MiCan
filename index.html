@@ -9,8 +9,7 @@
 </head>
 <body>
   <div id="toolbar">
-    <span id="save-dot" title="已保存"></span>
-    <button id="btn-save" type="button">保存</button>
+    <span id="save-dot" title="改动即落盘"></span>
     <button id="btn-save-as" type="button">另存为</button>
     <button id="btn-open" type="button">打开</button>
     <button id="btn-rundir" type="button" title="全局运行目录：跟随工作文件夹">运行目录</button>
@@ -21,7 +20,7 @@
   </div>
   <div id="viewport">
     <div id="grid"></div>
-    <div id="hint">双击空白处新建文本节点，右键空白处新建命令节点</div>
+    <div id="hint">双击空白处新建文本节点，右键空白处新建命令节点<br>命令节点右侧两个点：上面拉执行边（定先后），下面拉数据边（传值）</div>
     <div id="world">
       <svg id="edges">
         <defs>
@@ -30,6 +29,9 @@
           </marker>
           <marker id="arrow-selected" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="#e0554a"></path>
+          </marker>
+          <marker id="arrow-exec" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#4a4a46"></path>
           </marker>
         </defs>
       </svg>

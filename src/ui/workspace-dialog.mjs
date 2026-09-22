@@ -252,21 +252,3 @@ export function askRunDir({ initial = '', hint = '', quick = [], placeholder = '
   if (initial) input.select()
   return modal.promise
 }
-
-// 未保存改动的确认框：回车或「继续」为 true，其余为 false。
-export function askDiscard(message) {
-  const modal = openModal({ title: '有未保存的改动', okText: '继续', cancelText: '先不' })
-  modal.body.textContent = message
-  modal.ok.addEventListener('click', () => modal.finish(true))
-  const onKey = (event) => {
-    if (event.key !== 'Enter') return
-    event.preventDefault()
-    modal.finish(true)
-  }
-  document.addEventListener('keydown', onKey, true)
-  modal.ok.focus()
-  return modal.promise.then((value) => {
-    document.removeEventListener('keydown', onKey, true)
-    return value === true
-  })
-}

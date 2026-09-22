@@ -3,9 +3,8 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, cacheFile } from '../src/core/paths.mjs'
 
-const CANVAS_FILE = 'mican.json'
-const DOCS_DIR = 'docs'
 const RECENT_FILE = path.join(os.homedir(), '.mican', 'recent.json')
 const SETTINGS_FILE = path.join(os.homedir(), '.mican', 'settings.json')
 const RECENT_MAX = 8
@@ -46,7 +45,7 @@ export function createApi(initialRoot) {
       await fs.mkdir(target, { recursive: true })
       if ((await fs.readdir(target)).length > 0) throw new Error('目标文件夹不为空')
       root = target
-      return { root, canvas: null, recent: await remember(target) }
+      return { root, canvas: null, cache: {}, recent: await remember(target) }
     }
     const stat = await fs.stat(target).catch(() => null)
     if (!stat?.isDirectory()) throw new Error('文件夹不存在')
@@ -55,7 +54,20 @@ export function createApi(initialRoot) {
       .readFile(path.join(target, CANVAS_FILE), 'utf8')
       .then((raw) => JSON.parse(raw))
       .catch(() => null) // 没有存档就是空文件夹，照样能打开
-    return { root, canvas, recent: await remember(target) }
+    return { root, canvas, cache: await readCache(), recent: await remember(target) }
+  }
+
+  // 缓存文件：命令节点上次跑出来的裸输出。节点上要显示它，[[ ]] 也指着它。
+  // 直接扫目录，不依赖「存档里记了哪些」—— 两次写之间断了也能把孤儿收回来。
+  async function readCache() {
+    const dir = path.join(root, CACHE_DIR)
+    const cache = {}
+    for (const name of await fs.readdir(dir).catch(() => [])) {
+      if (!name.endsWith(CACHE_EXT)) continue
+      const text = await fs.readFile(path.join(dir, name), 'utf8').catch(() => null)
+      if (text !== null) cache[name.slice(0, -CACHE_EXT.length)] = text
+    }
+    return cache
   }
 
   // 列目录：给界面里的「浏览…」用，只给子目录和外加的上层入口。
@@ -82,16 +94,46 @@ export function createApi(initialRoot) {
     return { path: start, parent: parent === start ? null : parent, dirs, roots: await listRoots() }
   }
 
-  async function save({ canvas, docs = [], remove = [] }) {
+  // 上次落盘的画布：用来知道哪些文件是 MiCan 写的，清理时只动自己写过的那些。
+  async function lastCanvas() {
+    try {
+      return JSON.parse(await fs.readFile(path.join(root, CANVAS_FILE), 'utf8'))
+    } catch {
+      return null
+    }
+  }
+
+  async function save({ canvas, docs = [], cache = [] }) {
     if (!root) throw new Error('还没有工作文件夹')
+    const previous = await lastCanvas()
+
     await fs.mkdir(path.join(root, DOCS_DIR), { recursive: true })
-    // 先把 md 全部处理完，画布存档最后写 —— 它相当于提交。
     for (const doc of docs) {
       const target = inside(doc.file)
       await fs.mkdir(path.dirname(target), { recursive: true })
       await fs.writeFile(target, doc.content ?? '', 'utf8')
     }
-    for (const file of remove) await fs.rm(inside(file), { force: true })
+
+    // 缓存文件：命令节点的裸输出，跑完一个写一个，[[ ]] 指着它要。
+    if (cache.length) await fs.mkdir(path.join(root, CACHE_DIR), { recursive: true })
+    for (const item of cache) await fs.writeFile(inside(cacheFile(item.id)), item.content ?? '', 'utf8')
+
+    // 缓存目录是 MiCan 自己独占的，直接按目录清：存档没记上的孤儿也一并收掉。
+    // docs 里混着用户自己放的文件，所以那边只能按「上次存档说是我的」来清。
+    const cacheDir = path.join(root, CACHE_DIR)
+    const keepCache = new Set(cache.map((item) => item.id))
+    for (const name of await fs.readdir(cacheDir).catch(() => [])) {
+      if (!name.endsWith(CACHE_EXT) || keepCache.has(name.slice(0, -CACHE_EXT.length))) continue
+      await fs.rm(path.join(cacheDir, name), { force: true })
+    }
+
+    const keepDocs = new Set(docs.map((doc) => doc.file))
+    for (const node of previous?.nodes ?? []) {
+      if (node.kind === 'command' || keepDocs.has(node.file)) continue
+      await fs.rm(inside(node.file), { force: true })
+    }
+
+    // 画布存档最后写 —— 它相当于提交。
     await fs.writeFile(path.join(root, CANVAS_FILE), JSON.stringify(canvas, null, 2), 'utf8')
   }
 

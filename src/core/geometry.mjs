@@ -3,14 +3,14 @@
 const MIN_REACH = 40 // 控制柄最短长度：节点贴在一起时曲线也不塌成直线
 const BOW = 60 // 回程边向下兜的幅度：不让 A→B 与 B→A 两条边完全重合
 
-// 两个节点之间的连线：按左右相对位置决定从哪一侧出、哪一侧进。
-// 「回程边」多兜一个弯，否则两条反向边会画成同一条线，点也点不中、标签也写错边。
-export function edgeGeometry(from, to) {
+// 两个节点之间的连线：从来路的端口出发，按左右相对位置决定从哪一侧进。
+// 「回程边」多兜一个弯，否则两条反向边可能画到一起，点也点不中、标签也写错边。
+export function edgeGeometry(from, to, fromKind = 'data') {
   const fromCx = from.x + from.w / 2
   const toCx = to.x + to.w / 2
   // 中心 x 相同时用 id 定序，保证 A→B 与 B→A 不会画出同一条线
   const forward = toCx === fromCx ? to.id > from.id : toCx > fromCx
-  const start = { x: forward ? from.x + from.w : from.x, y: from.y + from.h / 2 }
+  const start = portPoint(from, fromKind)
   const end = { x: forward ? to.x : to.x + to.w, y: to.y + to.h / 2 }
   const reach = Math.max(MIN_REACH, Math.abs(end.x - start.x) / 2)
   const bow = forward ? 0 : BOW
@@ -29,9 +29,13 @@ export function previewPath(start, cursor) {
   return curve(start, { x: start.x + reach, y: start.y }, { x: cursor.x - reach, y: cursor.y }, cursor)
 }
 
-// 节点右侧的连接点：建边都从这里出发。
-export function portPoint(node) {
-  return { x: node.x + node.w, y: node.y + node.h / 2 }
+// 节点右侧的连接点：建边都从这里出发。命令节点两个（执行在上、数据在下），文本节点一个。
+// 从哪个点拉出去，就是哪一种边 —— 所以边层不需要再猜。
+const PORT_RATIO = { exec: 0.32, data: 0.68 }
+
+export function portPoint(node, kind = 'data') {
+  const ratio = node.kind === 'command' ? PORT_RATIO[kind] ?? 0.5 : 0.5
+  return { x: node.x + node.w, y: node.y + node.h * ratio }
 }
 
 function curve(start, c1, c2, end) {

@@ -2,7 +2,8 @@
 import { NODE_MIN_H, NODE_MIN_W } from './graph.mjs'
 import { clampScale } from './view.mjs'
 
-export const FORMAT_VERSION = 2
+export const FORMAT_VERSION = 3
+const READABLE = new Set([2, FORMAT_VERSION]) // 2 是引入边的两族之前那一版
 
 export function serialize(state) {
   return {
@@ -16,22 +17,36 @@ export function serialize(state) {
       w: node.w,
       h: node.h,
       ...(node.kind === 'command'
-        ? { command: node.command, ...(node.cwd ? { cwd: node.cwd } : {}) }
+        ? { command: node.command, ...(node.cwd ? { cwd: node.cwd } : {}), ...(node.entry ? { entry: true } : {}) }
         : { file: node.file, text: node.text }),
     })),
     edges: state.graph.edges.map((edge) => ({
       id: edge.id,
       from: edge.from,
       to: edge.to,
+      kind: edge.kind,
       label: edge.label ?? '',
     })),
+    results: resultsOf(state.graph),
   }
+}
+
+// 运行结果不是图结构：裸输出在缓存文件里，元信息（退出码、耗时、时间、实际跑的命令）在这儿。
+// 出参多带一个 results 键，但撤销快照只取 nodes 与 edges，所以运行本身不会进撤销栈。
+function resultsOf(graph) {
+  const results = {}
+  for (const node of graph.nodes) {
+    if (node.kind !== 'command' || !node.result) continue
+    const { code, failed, timedOut, truncated, at, elapsed, command } = node.result
+    results[node.id] = { code, failed: Boolean(failed), timedOut: Boolean(timedOut), truncated: Boolean(truncated), at, elapsed, command }
+  }
+  return results
 }
 
 // 校验并还原：不认识的结构直接报错，能救的地方（尺寸过小、悬空的边）就地修掉。
 export function deserialize(data) {
   if (!data || typeof data !== 'object') throw new Error('不是有效的 JSON 对象')
-  if (data.version !== FORMAT_VERSION) throw new Error(`不支持的版本：${data.version}`)
+  if (!READABLE.has(data.version)) throw new Error(`不支持的版本：${data.version}`)
   if (!Array.isArray(data.nodes)) throw new Error('nodes 不是数组')
   if (!Array.isArray(data.edges)) throw new Error('edges 不是数组')
 
@@ -50,6 +65,7 @@ export function deserialize(data) {
         ...size,
         command: typeof node.command === 'string' ? node.command : '',
         cwd: typeof node.cwd === 'string' ? node.cwd : '',
+        entry: node.entry === true, // 2 版没有这个键，默认不是入口
       }
     }
     const file = typeof node.file === 'string' ? node.file : ''
@@ -64,7 +80,18 @@ export function deserialize(data) {
   for (const edge of data.edges) {
     if (!edge || typeof edge.id !== 'string') continue
     if (!ids.has(edge.from) || !ids.has(edge.to) || edge.from === edge.to) continue // 悬空的边丢掉
-    edges.push({ id: edge.id, from: edge.from, to: edge.to, label: typeof edge.label === 'string' ? edge.label : '' })
+    const kind = edge.kind === 'exec' ? 'exec' : 'data' // 2 版全是文本节点喂命令，都是数据边
+    edges.push({ id: edge.id, from: edge.from, to: edge.to, kind, label: typeof edge.label === 'string' ? edge.label : '' })
+  }
+
+  // 入口是排他的：有执行入边的节点当不了入口，载入时把不合规的清掉，不留自相矛盾的状态。
+  const execTargets = new Set(edges.filter((edge) => edge.kind === 'exec').map((edge) => edge.to))
+  for (const node of nodes) if (node.entry && execTargets.has(node.id)) node.entry = false
+
+  // 元信息先挂上，裸输出等缓存文件那一份读回来再填。
+  const results = data.results && typeof data.results === 'object' ? data.results : {}
+  for (const node of nodes) {
+    if (node.kind === 'command' && results[node.id]) node.result = { ...results[node.id], output: '' }
   }
 
   const view = data.view ?? {}

@@ -67,10 +67,9 @@ body {
   background: #7fbf7f;
 }
 
-#save-dot.dirty {
+#save-dot.saving {
   background: #e0a94a;
 }
-
 #zoom-value {
   min-width: 38px;
   color: #6b6b66;
@@ -187,10 +186,14 @@ body.space-ready #viewport {
   cursor: pointer;
 }
 
-/* 注入边：连到命令节点的边是喂参数，不是收输出 */
-.edge.inject .edge-line {
+/* 两种边：执行边粗、深、不带标签；数据边细、蓝、带变量名 */
+.edge.data .edge-line {
   stroke: #9db6e4;
-  stroke-dasharray: 5 4;
+}
+
+.edge.exec .edge-line {
+  stroke: #4a4a46;
+  stroke-width: 2.4;
 }
 
 .edge.selected .edge-line {
@@ -203,6 +206,12 @@ body.space-ready #viewport {
   stroke-width: 1.6;
   stroke-dasharray: 5 4;
   pointer-events: none;
+}
+
+.edge-preview.exec {
+  stroke: #4a4a46;
+  stroke-width: 2.4;
+  stroke-dasharray: none;
 }
 
 .edge-label {
@@ -247,18 +256,43 @@ body.space-ready #viewport {
   box-shadow: 0 0 0 2px rgb(74 127 224 / 22%);
 }
 
+/* 连不上的落点：当场给颜色，不用等松手才知道 */
+.node.drop-invalid {
+  border-color: #e0554a;
+  box-shadow: 0 0 0 2px rgb(224 85 74 / 18%);
+}
+
+/* 入口：链从这里开始 */
+.node.kind-command.is-entry {
+  border-color: #c9a23c;
+  box-shadow: inset 3px 0 0 #c9a23c;
+}
+
 .node-port {
   position: absolute;
-  top: 50%;
   right: -6px;
   width: 12px;
   height: 12px;
   margin-top: -6px;
-  border: 1.5px solid #9db6e4;
   border-radius: 50%;
   background: #fff;
   opacity: 0;
   cursor: crosshair;
+}
+
+/* 两个端口的位置跟 geometry 里的 PORT_RATIO 对齐 */
+.node-port.port-exec {
+  top: 32%;
+  border: 1.5px solid #4a4a46;
+}
+
+.node-port.port-data {
+  top: 68%;
+  border: 1.5px solid #9db6e4;
+}
+
+.node.kind-text .node-port.port-data {
+  top: 50%;
 }
 
 .node:hover .node-port,

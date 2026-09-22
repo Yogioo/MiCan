@@ -1,11 +1,11 @@
 // 边层：把边画成 SVG 曲线，处理建边、选中、标签编辑。
-import { addEdge, findNode, setEdgeLabel } from '../core/graph.mjs'
+import { addEdge, connectProblem, findNode, setEdgeLabel } from '../core/graph.mjs'
 import { edgeGeometry, portPoint, previewPath } from '../core/geometry.mjs'
 import { toWorld } from '../core/view.mjs'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
 
-export function mountEdges({ getState, update }) {
+export function mountEdges({ getState, update, onError }) {
   const svg = document.getElementById('edges')
   const labels = document.getElementById('labels')
   const elements = new Map()
@@ -25,19 +25,22 @@ export function mountEdges({ getState, update }) {
         elements.set(edge.id, entry)
       }
 
-      const { d, mid } = edgeGeometry(from, to)
+      const { d, mid } = edgeGeometry(from, to, edge.kind)
       entry.hit.setAttribute('d', d)
       entry.line.setAttribute('d', d)
       const selected = state.selection?.kind === 'edge' && state.selection.id === edge.id
       entry.group.classList.toggle('selected', selected)
-      // 指到命令节点的边是喂参数，不是收输出：画成虚线，连反了一眼能看出来
-      entry.group.classList.toggle('inject', to.kind === 'command')
-      entry.line.setAttribute('marker-end', selected ? 'url(#arrow-selected)' : 'url(#arrow)')
+      entry.group.classList.toggle('exec', edge.kind === 'exec')
+      entry.group.classList.toggle('data', edge.kind !== 'exec')
+      entry.line.setAttribute('marker-end', selected ? 'url(#arrow-selected)' : edge.kind === 'exec' ? 'url(#arrow-exec)' : 'url(#arrow)')
       entry.label.style.transform = `translate(${mid.x}px, ${mid.y}px) translate(-50%, -50%)`
-      if (entry.labelText !== edge.label) {
-        entry.label.textContent = edge.label
-        entry.label.classList.toggle('empty', !edge.label)
-        entry.labelText = edge.label
+      // 标签只是变量名 —— 执行边不携带数据，没有名字可写
+      const shown = edge.kind === 'exec' ? '' : edge.label
+      entry.label.hidden = edge.kind === 'exec'
+      if (entry.labelText !== shown) {
+        entry.label.textContent = shown
+        entry.label.classList.toggle('empty', !shown)
+        entry.labelText = shown
       }
     }
 
@@ -95,7 +98,7 @@ export function mountEdges({ getState, update }) {
     const entry = elements.get(id)
     if (!entry || entry.editing) return
     const edge = getState().graph.edges.find((item) => item.id === id)
-    if (!edge) return
+    if (!edge || edge.kind === 'exec') return // 执行边没有名字可改
 
     const original = edge.label ?? ''
     const input = document.createElement('input')
@@ -129,16 +132,16 @@ export function mountEdges({ getState, update }) {
     })
   }
 
-  // 从节点右侧连接点拖到另一个节点：松开即建边。
-  function startConnection(fromId, event) {
+  // 从节点的某个连接点拖到另一个节点：松开即建边。kind 由出发的那个端口决定。
+  function startConnection(fromId, kind, event) {
     if (connecting) return
     const from = findNode(getState().graph, fromId)
     if (!from) return
 
     const preview = document.createElementNS(SVG_NS, 'path')
-    preview.setAttribute('class', 'edge-preview')
+    preview.setAttribute('class', `edge-preview ${kind}`)
     svg.append(preview)
-    connecting = { fromId, preview, target: null }
+    connecting = { fromId, kind, preview, target: null, problem: null }
 
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
@@ -153,32 +156,38 @@ export function mountEdges({ getState, update }) {
     return node && node.dataset.id !== connecting.fromId ? node : null
   }
 
+  // 拖的时候就按 connectProblem 给出能不能连：连得上才高亮，连不上标红，松手时再说原因。
   function onMove(event) {
     const state = getState()
     const from = findNode(state.graph, connecting.fromId)
     if (!from) return stopConnection()
     const cursor = toWorld(state.view, event.clientX, event.clientY)
-    connecting.preview.setAttribute('d', previewPath(portPoint(from), cursor))
+    connecting.preview.setAttribute('d', previewPath(portPoint(from, connecting.kind), cursor))
 
     const target = dropTargetAt(event)
     if (target !== connecting.target) {
-      connecting.target?.classList.remove('drop-target')
-      target?.classList.add('drop-target')
+      connecting.target?.classList.remove('drop-target', 'drop-invalid')
+      connecting.problem = null
+      if (target) {
+        connecting.problem = connectProblem(state.graph, connecting.fromId, target.dataset.id, connecting.kind)
+        target.classList.add(connecting.problem ? 'drop-invalid' : 'drop-target')
+      }
       connecting.target = target
     }
   }
 
   function onUp(event) {
     const target = dropTargetAt(event)
-    const fromId = connecting.fromId
+    const { fromId, kind } = connecting
     stopConnection()
     if (!target) return
     const toId = target.dataset.id
     let created = null
     update((state) => {
-      created = addEdge(state.graph, fromId, toId)
+      created = addEdge(state.graph, fromId, toId, kind)
       if (created) state.selection = { kind: 'edge', id: created.id }
     })
+    if (!created) onError(connectProblem(getState().graph, fromId, toId, kind) ?? '这条边连不上')
   }
 
   function onKey(event) {
@@ -188,7 +197,7 @@ export function mountEdges({ getState, update }) {
   function stopConnection() {
     if (!connecting) return
     connecting.preview.remove()
-    connecting.target?.classList.remove('drop-target')
+    connecting.target?.classList.remove('drop-target', 'drop-invalid')
     window.removeEventListener('pointermove', onMove)
     window.removeEventListener('pointerup', onUp)
     window.removeEventListener('keydown', onKey)
