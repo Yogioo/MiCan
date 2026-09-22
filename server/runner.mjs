@@ -4,7 +4,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { routeFrom } from '../src/core/chain.mjs'
-import { dataInto, dataOut, execIn, execOutAll, findNode, runnable } from '../src/core/graph.mjs'
+import { dataInto, dataOut, execIn, execOutAll, findNode, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
 import { CANVAS_FILE, cacheFile } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { deserialize, resultMeta } from '../src/core/serialize.mjs'
@@ -190,11 +190,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
   // 出边可以成环，所以兜「跑飞了」的只有步数上限（存档配置 canvas.stepLimit）。
   async function walk(run) {
     const limit = canvas.stepLimit
-    // 入口节点自己不跑：它只是「从这儿开始」，第一步永远是它那根出边指到的节点。
-    const head = findNode(run.graph, run.nodeId)
-    const first = head?.kind === 'entry' ? execOutAll(run.graph, run.nodeId)[0]?.to : run.nodeId
-    if (!first) return finish(run, 'error', '入口节点还没连到会跑的节点')
-    let cursor = first
+    // 触发节点自己不跑（它只是「从这儿开始」）：第一步在 start 里就算好了，就是 run.headId
+    let cursor = run.headId
     for (let step = 1; step <= limit; step += 1) {
       if (run.stopped) return finish(run, 'stopped', stopMessage(run, step - 1))
       const outcome = await runStep(run, cursor, step)
@@ -228,16 +225,22 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     const graph = await loadGraph(root)
     const node = findNode(graph, id)
     if (!node) throw new Error('这个节点不在画布上')
-    // 跑链只从入口节点出发：入口自己没有进程，第一步是它那根出边指到的节点
-    if (mode === 'chain' ? node.kind !== 'entry' : !runnable(node)) {
-      throw new Error(mode === 'chain' ? '跑链得从入口节点开始' : '这个节点运行不了')
+    // 跑链从触发节点（入口或定时器）出发：它自己没有进程，第一步是它那根出边指到的节点
+    if (mode === 'chain' ? !isTrigger(node) : !runnable(node)) {
+      throw new Error(mode === 'chain' ? '跑链得从入口节点或定时器开始' : '这个节点运行不了')
     }
+    // 这条链的「链身」从哪个会跑的节点起步。跳过判断看它，不看是谁点的火 ——
+    // 同一个命令，人手从入口进来与定时器进来是同一条链，不该同时跑两遍。
+    const head = mode === 'chain' ? execOutAll(graph, id)[0]?.to : id
+    if (!runnable(findNode(graph, head))) throw new Error(mode === 'chain' ? '它还没连到会跑的节点' : '这个节点运行不了')
+    if (mode === 'chain' && isRunning(head)) throw new Error('这条链还在跑，等它结束')
 
     const run = {
       id: nextId(),
       mode,
       trigger, // 谁开的这一次：manual 是人点的，timer 是定时器到点（后端自己开的）
       nodeId: id,
+      headId: head,
       startedAt: Date.now(),
       step: 0,
       active: true,
@@ -293,8 +296,9 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     return () => run.subscribers.delete(send)
   }
 
-  // 有没有一条从某个入口起跑的链还在走。定时器拿它判断「上一条还没跑完就跳过这一次」。
-  const isRunning = (nodeId) => [...runs.values()].some((run) => run.active && run.nodeId === nodeId)
+  // 有没有一条从某个会跑的节点起步的链还在走。定时器拿它判断「上一条还没跑完就跳过这一次」：
+  // 人手从入口跑同一条链时定时器也看得见 —— 它们指的是同一个起步节点，本来就是同一条链。
+  const isRunning = (headId) => [...runs.values()].some((run) => run.active && run.headId === headId)
 
   return { start, stop, list, attach, owns, ownsFile, isRunning, has: (runId) => runs.has(runId) }
 }

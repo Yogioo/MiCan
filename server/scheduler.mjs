@@ -23,15 +23,15 @@ export function createScheduler({ getRoot, runChain, isRunning }) {
     if (hits.length > KEEP_HITS) hits.shift()
   }
 
-  // 到点了：这条链还在跑就跳过这一次（只看自己那条链，别的链照跑），否则让运行器走一整条链。
-  async function fire(timerId, entryId) {
-    if (isRunning(entryId)) {
+  // 到点了：这条链还在跑就跳过这一次（只看链身，别的链照跑），否则让运行器从定时器出发走一整条链。
+  async function fire(timerId, headId) {
+    if (isRunning(headId)) {
       record(timerId, 'skipped', '上次跳过了（上一条还在跑）')
       return writeBack(timerId, { at: Date.now(), skipped: true, note: '上次跳过了（上一条还在跑）' })
     }
     const at = Date.now()
     try {
-      await runChain(entryId)
+      await runChain(timerId)
       record(timerId, 'fired', '上次触发了')
       await writeBack(timerId, { at, skipped: false, note: '上次触发了' })
     } catch (error) {
@@ -58,12 +58,12 @@ export function createScheduler({ getRoot, runChain, isRunning }) {
     await fs.writeFile(file, JSON.stringify(data, null, 2), 'utf8').catch(() => {})
   }
 
-  function arm(timerId, { entryId, schedule, key }) {
+  function arm(timerId, { headId, schedule, key }) {
     const delay = nextFireAt(schedule) - Date.now()
     if (delay <= 0 || delay > MAX_DELAY_MS) return
     const handle = setTimeout(async () => {
       arming.delete(timerId)
-      await fire(timerId, entryId)
+      await fire(timerId, headId)
       await sync() // 响过之后重排下一次：间隔型落到下一个相位，每天型落到明天
     }, delay)
     arming.set(timerId, { key, handle })
@@ -74,8 +74,8 @@ export function createScheduler({ getRoot, runChain, isRunning }) {
     arming.clear()
   }
 
-  // 装载时刻表：按盘上这份画布重排。时间表或它指的入口没变的定时器原地不动 ——
-  // 免得每次落盘都把倒计时推后。没连入口、时间表没写对的就不排（界面上会标红）。
+  // 装载时刻表：按盘上这份画布重排。时间表或它连的链没变的定时器原地不动 ——
+  // 免得每次落盘都把倒计时推后。没连到会跑的节点、时间表没写对的就不排（界面上会标红）。
   // 落盘可能连着来几次，所以串成一条链做，免得两次装载互相错位。
   let pending = Promise.resolve()
   function sync() {
@@ -98,10 +98,10 @@ export function createScheduler({ getRoot, runChain, isRunning }) {
     const wanted = new Map()
     for (const node of graph.nodes) {
       if (node.kind !== 'timer') continue
-      const entryId = execOutAll(graph, node.id)[0]?.to
+      const headId = execOutAll(graph, node.id)[0]?.to // 链身从哪个会跑的节点起步（跳过的判据看它）
       const schedule = parseSchedule(node.schedule)
-      if (!entryId || !schedule) continue
-      wanted.set(node.id, { entryId, schedule, key: JSON.stringify([entryId, schedule]) })
+      if (!headId || !schedule) continue
+      wanted.set(node.id, { headId, schedule, key: JSON.stringify([headId, schedule]) })
     }
 
     for (const [timerId, armed] of arming) {

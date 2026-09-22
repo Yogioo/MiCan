@@ -412,13 +412,13 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     } else if (node.kind === 'extract') {
       // 提取节点没进程可跑，能做的只有「按现在的值重新取一次」
       items.push({ label: '运行提取', run: () => onRunCommand(node.id) })
-    } else if (node.kind === 'entry') {
-      // 入口是链的起点：从这里出发走完整条链
-      items.push({ label: '运行链路', run: () => onRunChain(node.id) })
+    } else if (node.kind === 'entry' || node.kind === 'timer') {
+      // 两枚触发节点都是链的起点，差别只在「什么时候点火」：入口靠人手，定时器到点自己跑。
+      // 定时器也能手动点一下 —— 想验证配好的链不用等到点。
+      items.push({ label: node.kind === 'timer' ? '立即跑一次' : '运行链路', run: () => onRunChain(node.id) })
     } else if (node.kind === 'text') {
       items.push({ label: '重命名文件', run: () => beginFileEdit(nodeEl, node) })
     }
-    // 定时器身上没有能点的动作：它的时间表双击就能改，跑不跑是后端的事
     if (!items.length) return
     openMenu(event.clientX, event.clientY, items)
   })

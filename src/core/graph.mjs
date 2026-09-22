@@ -148,14 +148,12 @@ export function connectProblem(graph, from, to, kind) {
   }
   if (kind !== 'exec') return `不认识的边：${kind}`
 
-  // 执行边：入口和定时器是起点，各自只带一根出边；会跑的节点之间才是「按值分路」那一套。
-  if (source.kind === 'timer') {
-    if (target.kind !== 'entry') return '定时器只能连入口节点'
-    return execOutAll(graph, from).length ? '定时器只能指一个入口' : null
-  }
-  if (source.kind === 'entry') {
-    if (!runnable(target)) return '入口只能连会跑的节点（命令节点或提取节点）'
-    return execOutAll(graph, from).length ? '入口只能有一根执行出边' : null
+  // 执行边：触发节点（入口 / 定时器）都是起点 —— 只能连会跑的节点，各自只带一根出边。
+  // 两者在边上完全同一套，差别只在「什么时候点火」：入口靠人手（以后是子图被调用），定时器到点自己跑。
+  if (trigger(source)) {
+    const name = source.kind === 'timer' ? '定时器' : '入口'
+    if (!runnable(target)) return `${name}只能连会跑的节点（命令节点或提取节点）`
+    return execOutAll(graph, from).length ? `${name}只能有一根执行出边` : null
   }
   if (!runnable(source)) return '执行边只能从会跑的节点、入口或定时器出发'
   if (!runnable(target)) return '执行边的去处得是会跑的节点（入口和定时器是起点）'

@@ -129,23 +129,32 @@ export function deserialize(data) {
 
   const ids = new Set(nodes.map((node) => node.id))
   const kindOf = new Map(nodes.map((node) => [node.id, node.kind]))
-  // 触发节点是起点：进来一根执行边、或者跟它传数据，都是没意义的状态，载入时直接丢掉。
+  const isRunnable = (id) => kindOf.get(id) === 'command' || kindOf.get(id) === 'extract'
+  // 触发节点是起点：进来一根执行边、或跟它传数据，都是没意义的状态，载入时直接丢掉。
   const edgeOk = (kind, from, to) => {
     const a = kindOf.get(from)
     const b = kindOf.get(to)
     if (kind === 'data') return !(a === 'entry' || a === 'timer' || b === 'entry' || b === 'timer')
-    if (a === 'timer') return b === 'entry'
-    if (a === 'entry') return b === 'command' || b === 'extract'
-    return (a === 'command' || a === 'extract') && (b === 'command' || b === 'extract')
+    if (a === 'entry' || a === 'timer') return isRunnable(to)
+    return isRunnable(from) && isRunnable(to)
   }
 
+  const source = [...data.edges, ...migrated]
   const edges = []
-  for (const edge of [...data.edges, ...migrated]) {
+  for (const edge of source) {
     if (!edge || typeof edge.id !== 'string') continue
     if (!ids.has(edge.from) || !ids.has(edge.to) || edge.from === edge.to) continue // 悬空的边丢掉
     const kind = edge.kind === 'exec' ? 'exec' : 'data' // 2 版全是文本节点喂命令，都是数据边
-    if (!edgeOk(kind, edge.from, edge.to)) continue
-    edges.push({ id: edge.id, from: edge.from, to: edge.to, kind, label: typeof edge.label === 'string' ? edge.label : '' })
+    // 最早的 6 版把定时器接在入口前面（「定时器 → 入口 → 命令」）。入口与定时器本来就是并列的
+    // 两种触发，定时器不该再挂一层：把它的出边挪到那个入口指着的第一个会跑的节点上。
+    // 入口节点留着（它还是「人手跑这条链」的入口），所以这条链会多一根并排进来的边。
+    let to = edge.to
+    if (kind === 'exec' && kindOf.get(edge.from) === 'timer' && kindOf.get(to) === 'entry') {
+      const head = source.find((item) => item?.kind === 'exec' && item.from === to)?.to
+      if (isRunnable(head)) to = head
+    }
+    if (!edgeOk(kind, edge.from, to)) continue
+    edges.push({ id: edge.id, from: edge.from, to, kind, label: typeof edge.label === 'string' ? edge.label : '' })
   }
 
   // 元信息先挂上，裸输出等缓存文件那一份读回来再填（触发记录没有裸输出）。

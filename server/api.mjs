@@ -28,12 +28,12 @@ export function createApi(initialRoot) {
 
   // 跑链的人：它读盘上的画布、自己走图、自己把结果写盘。它占着哪个文件，下面的 save 就跳过哪个。
   const runner = createRunner({ getRoot: () => root, resolveCwd, readSettings })
-  // 定时器：后端自己看着时刻表，到点让运行器从入口出发跑链（ADR-0005）。
+  // 定时器：后端自己看着时刻表，到点让运行器从定时器出发跑链（ADR-0005）。
   // 时刻表在盘上的 mican.json 里，所以每次落盘与每次换工作文件夹之后重新装一次。
   const scheduler = createScheduler({
     getRoot: () => root,
-    runChain: (entryId) => runner.start({ id: entryId, mode: 'chain', trigger: 'timer' }),
-    isRunning: (entryId) => runner.isRunning(entryId),
+    runChain: (timerId) => runner.start({ id: timerId, mode: 'chain', trigger: 'timer' }),
+    isRunning: (headId) => runner.isRunning(headId),
   })
   // 起来的时候盘上可能已经有一份画布（环境变量指的文件夹）：先把时刻表装上。
   // 不然要等第一次落盘或打开文件夹，定时器才会开始响 —— 在那之前界面看上去是死的。
