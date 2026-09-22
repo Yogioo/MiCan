@@ -359,6 +359,14 @@ async function startRun(mode, id) {
 const onRunCommand = (id) => startRun('node', id)
 const onRunChain = (id) => startRun('chain', id)
 
+// 右下角那个「开始」：从入口节点出发跑链。入口可以有好几枚（将来的子图各有各的入口），
+// 所以它把每一枚入口都点着：已经有一条从同一个起步节点出发的链在走时，那一条报一声，别的照常。
+async function startFromEntries() {
+  const entries = state.graph.nodes.filter((node) => node.kind === 'entry')
+  if (!entries.length) return showMessage('画布上没有入口节点：放一枚入口，连到第一个会跑的节点')
+  for (const node of entries) await startRun('chain', node.id)
+}
+
 // 网页重开时后端可能还有链在走（页面关着也跑），定时器到点也会自己开跑（ADR-0005）——
 // 这两件事都没有人点过「运行」，所以页面自己去问：每几秒拉一次「在跑的 + 刚触发的」。
 // 没见过的 runId 接上事件流（attach 会把历史补上，所以就算这次已经跑完也接得到）；
@@ -646,7 +654,7 @@ const nodes = mountNodes({
   onNewTimerNode: (world) => createNodeAt(world, 'timer'),
   onSetRunDir: setRunDir,
 })
-const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, stop: stopRunning } })
+const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, start: startFromEntries, stop: stopRunning } })
 // 设置要先读到（全局运行目录、启动要打开哪个工作文件夹都在里面），所以这几句串起来做
 // 最后一句把后端还在跑的链接回来：页面关着的时候它可能已经跑起来了（ADR-0009）。
 loadRecent()
