@@ -1,6 +1,6 @@
 // 弹窗那一套（骨架、请求、路径选择器）+ 问工作文件夹 / 运行目录。
 // 全部画在页面里 —— 浏览器会拦截 prompt / confirm，或者把它们弹在看不见的地方。
-// 骨架、请求、attachBrowser 是导出的：设置窗口也用它们，别再写一份。
+// 骨架、请求、小按钮、attachBrowser 是导出的：设置窗口也用它们，别再写一份。
 export const request = async (route, body) => {
   const response = await fetch(route, {
     method: 'POST',
@@ -12,7 +12,7 @@ export const request = async (route, body) => {
   return data
 }
 
-const button = (className, text) => {
+export const button = (className, text) => {
   const el = document.createElement('button')
   el.type = 'button'
   el.className = className

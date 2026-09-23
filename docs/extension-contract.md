@@ -5,12 +5,15 @@
 
 一个目录 = 一个动作 = 菜单里一项。想暴露八个能力就写八个目录。含 `EXTENSION.md` 的目录是叶子，不再往下扫；不含的目录只是菜单里的分组，继续往下。
 
-> 这份契约的正式位置是工作文件夹里的 `nodes/README.md`（跟扩展住在一起，写扩展的人一进目录就看到）。软件仓库里留一份，是因为没有工作文件夹的时候它也得存在。
+> 这份契约的正式位置是工作文件夹里的 `extensions/README.md`（跟扩展住在一起，写扩展的人一进目录就看到）。软件仓库里留一份，是因为没有工作文件夹的时候它也得存在。
+
+仓库里 [`builtin/extensions/`](../builtin/extensions/README.md) 放着一份写好的 [`pi` 扩展](../builtin/extensions/pi/EXTENSION.md)：
+在**设置 → 跟这份画布走 → 扩展**里点「导入内置插件…」就能把它拷进工作文件夹。不想从零开始，就照它抄。
 
 ## 一个完整的例子
 
 ```
-nodes/git-status/
+extensions/git-status/
 ├── EXTENSION.md
 └── run.mjs
 ```
@@ -66,7 +69,7 @@ defaults:               # 可选。给输入写默认值，拖出来的节点上
 ## 画布拼出来的命令
 
 ```
-node "<工作文件夹绝对路径>/nodes/git-status/run.mjs" --repo <边上的值>
+node "<工作文件夹绝对路径>/extensions/git-status/run.mjs" --repo <边上的值>
 ```
 
 工作目录按节点的来（节点自己设的 > 画布的运行目录 > 工作文件夹），**不用 `--workspace` 这类参数把目录传进来**：`process.cwd()` 就是它。把 `git status` 封装成扩展，参数本来就是运行目录。

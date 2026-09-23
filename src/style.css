@@ -1097,6 +1097,25 @@ body.space-ready #viewport {
   border-left: 2px solid #f0f0ec;
 }
 
+.set-row input[type='checkbox'] {
+  width: auto;
+  flex: none;
+}
+
+/* 名字那一列只有 122px，长了就省略，别把控件挤出去 */
+.set-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.set-check span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .set-restore {
   align-self: flex-start;
   margin-top: 6px;

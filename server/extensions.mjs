@@ -3,10 +3,18 @@
 // 一条判据：含 EXTENSION.md 的目录就是扩展，是叶子，不再往下扫；不含的只是菜单里的分组，继续往下。
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const MANIFEST = 'EXTENSION.md'
-// 扩展住在工作文件夹的 nodes 底下；节点上存的是相对工作文件夹的路径。
-export const EXT_DIR = 'nodes'
+// 扩展住在工作文件夹的 extensions 底下；节点上存的是相对工作文件夹的路径。
+// 不叫 nodes：存档里那个 nodes 是画布上的节点数组，两回事，别让同一个词身兼二职。
+export const EXT_DIR = 'extensions'
+
+// 内置库：随软件带走的一份扩展样本（仓库根下的 builtin/）。它**不是运行时的第二层** ——
+// 菜单只扫工作文件夹（ADR-0012），这里的东西只能靠**拷**进去。
+// 库的布局跟工作文件夹一样（`<库根>/extensions/<名字>`），所以扫描与越界闸门都原样复用。
+// 路径从本文件算（vite 把 config 连我们打包时会逐文件注入 import.meta.url，算出来仍是真的）。
+export const LIBRARY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'builtin')
 
 // yaml 头：文件开头用 --- 包起来的那几行。认平铺的 `key: value`，外加一层缩进
 // （`defaults:` 底下那几个默认值）。不做引号、不做更深的嵌套 —— 四个字段够用了，
@@ -83,7 +91,7 @@ export async function scanExtensions(root) {
   return { items: top?.children ?? [], problems }
 }
 
-// 节点上那个路径 → 绝对目录。只认工作文件夹 nodes 底下的：存档是可以手改的，别的一律挡掉。
+// 节点上那个路径 → 绝对目录。只认工作文件夹 extensions 底下的：存档是可以手改的，别的一律挡掉。
 function resolveDir(root, rel) {
   const base = path.resolve(root, EXT_DIR)
   const dir = path.resolve(root, String(rel ?? ''))
@@ -101,4 +109,46 @@ export async function commandOf(root, rel) {
   if (entry === dir || !entry.startsWith(dir + path.sep)) throw new Error(`扩展 ${rel} 的 entry 跑到了目录外面：${meta.entry}`)
   const args = meta.args.trim()
   return { command: `node "${entry}"${args ? ` ${args}` : ''}`, name: meta.name }
+}
+
+const isDirectory = async (dir) => (await fs.stat(dir).catch(() => null))?.isDirectory() ?? false
+
+// 库里有什么。exists 说的是「工作文件夹里已经有同一个目录了」—— 按目录判，不按菜单里的名字判，
+// 因为冲突真正发生在盘上的路径。界面据此问用户是覆盖还是跳过。
+export async function listLibrary(workspace) {
+  const { items, problems } = await scanExtensions(LIBRARY_ROOT)
+  const flat = []
+  const walk = (list) => {
+    for (const item of list ?? []) {
+      if (item.entry) flat.push(item)
+      else walk(item.children)
+    }
+  }
+  walk(items)
+  const out = []
+  for (const item of flat) {
+    out.push({
+      label: item.label,
+      description: item.description,
+      path: item.path, // 跟工作文件夹里同一个相对路径，如 extensions/pi
+      exists: workspace ? await isDirectory(path.resolve(workspace, item.path)) : false,
+    })
+  }
+  return { items: out, problems }
+}
+
+// 从内置库拷一份进工作文件夹。目标已经有了就抛错 —— 覆盖与否由调用方问过用户再传 overwrite。
+// 整个目录搬：正文、实现、连它自带的依赖一起走（MiCan 不解析它们，只是搬）。
+export async function importExtension(workspace, rel, { overwrite = false } = {}) {
+  if (!workspace) throw new Error('先打开一个工作文件夹，扩展才有地方放')
+  const from = resolveDir(LIBRARY_ROOT, rel)
+  const to = resolveDir(workspace, rel)
+  if (!(await isDirectory(from))) throw new Error(`内置库里没有这一份：${rel}`)
+  if (await isDirectory(to)) {
+    if (!overwrite) throw new Error(`工作文件夹里已经有了：${rel}`)
+    await fs.rm(to, { recursive: true, force: true })
+  }
+  await fs.mkdir(path.dirname(to), { recursive: true })
+  await fs.cp(from, to, { recursive: true })
+  return { path: rel, overwritten: overwrite }
 }

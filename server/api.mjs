@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, cacheFile } from '../src/core/paths.mjs'
 import { shellNames } from './exec.mjs'
-import { scanExtensions } from './extensions.mjs'
+import { importExtension, listLibrary, scanExtensions } from './extensions.mjs'
 import { createRunner } from './runner.mjs'
 import { createScheduler } from './scheduler.mjs'
 
@@ -292,9 +292,15 @@ export function createApi(initialRoot) {
         return answer(await writeSettings(patch))
       }
       if (route === '/api/browse') return send(res, 200, await browse(body.path))
-      // 菜单里的扩展：扫工作文件夹的 nodes/，只读清单的 yaml 头（ADR-0013）
+      // 菜单里的扩展：扫工作文件夹的 extensions/，只读清单的 yaml 头（ADR-0013）
       if (route === '/api/extensions') {
         return send(res, 200, root ? await scanExtensions(root) : { items: [], problems: [] })
+      }
+      // 内置库：随软件带走的那份样本，只列不扫工作文件夹（ADR-0012：它是个拷贝源，不是第二层）
+      if (route === '/api/library') return send(res, 200, await listLibrary(root))
+      // 拷一份进工作文件夹。同名覆盖与否由界面问过用户再传 overwrite，这里不猜。
+      if (route === '/api/import') {
+        return send(res, 200, await importExtension(root, body.path, { overwrite: body.overwrite === true }))
       }
       if (route === '/api/save') {
         await save(body)
