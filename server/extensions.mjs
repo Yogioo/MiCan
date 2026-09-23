@@ -108,7 +108,8 @@ export async function commandOf(root, rel) {
   const entry = path.resolve(dir, meta.entry)
   if (entry === dir || !entry.startsWith(dir + path.sep)) throw new Error(`扩展 ${rel} 的 entry 跑到了目录外面：${meta.entry}`)
   const args = meta.args.trim()
-  return { command: `node "${entry}"${args ? ` ${args}` : ''}`, name: meta.name }
+  // defaults 一并交回去：节点上没填的输入由它兜底（ADR-0013 写下的默认值，用法见 ADR-0015）
+  return { command: `node "${entry}"${args ? ` ${args}` : ''}`, name: meta.name, defaults: meta.defaults }
 }
 
 const isDirectory = async (dir) => (await fs.stat(dir).catch(() => null))?.isDirectory() ?? false

@@ -1,6 +1,6 @@
 # 扩展的声明是一份静态清单
 
-Status: accepted
+Status: accepted（`defaults` 的用法被 [ADR-0015](./0015-extension-defaults-are-fallbacks.md) 修订：不再是拖出来的初值，而是留空时的回退）
 
 决定：**一个扩展 = 一个目录**，目录里有 `EXTENSION.md`（yaml 头 + 正文）和它自己的实现文件。yaml 头就这几个字段：
 

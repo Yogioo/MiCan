@@ -12,7 +12,7 @@ import {
   setNodeText,
 } from '../core/graph.mjs'
 import { curveHitsBox, edgeCurve, rectsOverlap } from '../core/geometry.mjs'
-import { inputsOf, findExtension, targetPortIndex } from '../core/inputs.mjs'
+import { inputsOf, targetPortIndex } from '../core/inputs.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
 import { applyCanvas, applyMachine, canvas, machine } from '../core/settings.mjs'
 import { parseSchedule } from '../core/schedule.mjs'
@@ -329,14 +329,9 @@ function createNodeAt(world, kind, extra = {}) {
     y: world.y - machine.nodeDefaultH / 2,
     ...extra,
   })
-  // 扩展里写的默认值：拖出来就先填上（填的是这一份，扩展不动 —— 想改全部就去改 EXTENSION.md）。
-  // 只填真是输入的：清单里写了别的名字也不往存档里塞垃圾。
-  const item = node.extension ? findExtension(state.extensions?.items, node.extension) : null
+  // 清单里的默认值**不**填进节点：那个框留空，跑的时候由后端拿默认值兜底（ADR-0015）。
+  // 框里只剩一句灰色的「默认 …」当提示 —— 拖出来是一张干净的节点。
   const ports = inputsOf(node, state.extensions)
-  for (const port of ports) {
-    const value = item?.defaults?.[port.name]
-    if (value) node.consts[port.name] = value
-  }
   update((draft) => {
     draft.graph.nodes.push(node)
     // 端口几个落地前就知道了，高度当场兜够

@@ -27,7 +27,8 @@ function valueOf(workspace, source) {
 
 // 收集入边变量。所有对不上的地方攒起来一次报，别让用户一次修一个。
 // 值的合法性（空、换行）不在这里管：只有真被写进命令的那一个才算数。
-export function collectVars(graph, id, workspace) {
+// defaults 是扩展清单给的默认值，**缺省回退**用：那个名字既没填常量、也没连边，才拿它顶上。
+export function collectVars(graph, id, workspace, defaults = {}) {
   const vars = new Map()
   const errors = []
   // 节点上填的常量先放进来：同一个名字既有常量又接了边时，边说了算（界面上那个框也会让位）。
@@ -55,6 +56,13 @@ export function collectVars(graph, id, workspace) {
       continue
     }
     vars.set(edge.label, value)
+  }
+  // 兜底放在最后：常量与连线都看过了，才知道哪个名字真没人管。
+  // 连了边却没跑过（errors 里那条）不在这儿顶 —— 边是更明确的来源，缺值就该报出来。
+  for (const [name, raw] of Object.entries(defaults)) {
+    const text = String(raw ?? '').trim()
+    if (!text || vars.has(name) || fromEdges.has(name)) continue
+    vars.set(name, { text, file: text })
   }
   return { vars, errors }
 }

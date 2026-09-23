@@ -127,15 +127,19 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     // 改扩展对所有引用它的节点立刻生效（ADR-0014）。扩展读不到就停在这一步。
     const ext = extensionOf(node)
     let template = node.command
+    let defaults = {}
     if (ext) {
       try {
-        template = (await commandOf(run.root, ext)).command
+        const built = await commandOf(run.root, ext)
+        template = built.command
+        defaults = built.defaults ?? {}
       } catch (error) {
         return { error: error.message }
       }
     } else if (!template.trim()) return { error: '这个命令节点还没有命令' }
-    // 变量注入只改这一次要跑的命令，节点上的模板不动；取值是「此刻」的
-    const { vars, errors } = collectVars(graph, id, run.root)
+    // 变量注入只改这一次要跑的命令，节点上的模板不动；取值是「此刻」的。
+    // 框里留空、又没连线的那几个输入，拿清单里的默认值顶上 —— 所以节点上干干净净，改清单对所有引用它的节点立刻生效。
+    const { vars, errors } = collectVars(graph, id, run.root, defaults)
     const injected = applyVars(template, vars)
     const problems = [...new Set([...errors, ...injected.problems])]
     if (problems.length) return { error: `变量没对上：${problems.join('；')}` }

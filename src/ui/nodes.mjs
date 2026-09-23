@@ -126,7 +126,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     if (!box) return
     const inputs = inputsOf(node, state.extensions)
     const wired = wiredNames(state.graph, node.id)
-    // 清单里给这个输入写的默认值：只在框空着的时候当提示，不自己填回去
+    // 清单里给这个输入写的默认值：框空着的时候它顶上（存盘里没有它，后端运行时现补）
     const declared = node.extension ? findExtension(state.extensions?.items, node.extension) : null
     // 端口只在名单变了的时候重建 —— 每次重绘都重建的话，正在填的那个框会被抽走
     const signature = inputs.map((port) => `${port.name}${port.file ? '(f)' : ''}`).join('|')

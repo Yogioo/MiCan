@@ -1,11 +1,11 @@
 // pi：在运行目录里让 pi 干一件事，把它的回话包成一段 JSON（见 EXTENSION.md）。
 //
 // 自己只认两个参数，其余**原样转给 pi**：
-//   `--prompt <md 路径>`   提示词。多行的、进不了命令行，所以只能从文件来 —— 读出来从 stdin 递给 pi。
+//   `--prompt <md 路径 | 正文>`   提示词。长的那样给路径（多行的进不了命令行）；短的直接把字写在这儿就行。
 //   `--留会话 <true|false>`  留就什么都不加，不留就补上 `--no-session`。
 //
 // 「原样转给 pi」的意思是：节点上那六个开关框里写什么，pi 就收到什么（`--model sonnet`、
-// `--tools read,bash`、`--no-skills`……）。唯一的保留词是 `不加`（清单里每个开关的默认值）：
+// `--tools read,bash`、`--no-skills`……）。唯一的保留词是 `空`（清单里每个开关的默认值）：
 // 这一个开关一个参数都不加，把它滤掉。所以加开关只用改 EXTENSION.md，不用改这个文件。
 //
 // stdout 就是节点的值：永远吐一段合法 JSON，兜不住也吐 {"ok":false,...}，不让它漏到链上。
@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 
 // 开关框里写它 = 这个开关不加任何参数（见 EXTENSION.md）。
-const NO_FLAG = '不加'
+const NO_FLAG = '空'
 // 自己认的另一个名字：留会话，true / false。
 const KEEP_SESSION = '--留会话'
 const IS_WINDOWS = process.platform === 'win32'
@@ -35,7 +35,7 @@ function startPi(args, cwd) {
   return spawn('cmd.exe', ['/d', '/s', '/c', `"${line}"`], { cwd, windowsVerbatimArguments: true })
 }
 
-// argv 里 --prompt / --留会话 归自己，`不加` 滤掉，其余一个不动地留给 pi。
+// argv 里 --prompt / --留会话 归自己，`空` 滤掉，其余一个不动地留给 pi。
 function split(argv) {
   const rest = []
   let prompt = ''
@@ -56,6 +56,16 @@ function split(argv) {
   return { prompt, keepSession, rest }
 }
 
+// 提示词有两副面孔：给一份 md 的**路径**（`[[提示词]]` 接文本节点时就是它）就读那份文件；
+// 给别的就当**正文本身** —— 一句短提示词直接在框里写上就行，不必为它再摆一个文本节点。
+// 看着像路径（带分隔符、或像个 .md）却读不到，还是报错：别把路径本身当成提示词送给 pi。
+const looksLikePath = (value) => /[\\/]/.test(value) || /\.(md|markdown|txt)$/i.test(value)
+async function readPrompt(value) {
+  const file = await fs.readFile(value, 'utf8').catch(() => null)
+  if (file !== null) return file
+  return looksLikePath(value) ? null : value
+}
+
 // 跑完把三样东西一起交回来；起不来（pi 没装之类）走 error 那条。
 const runPi = (args, input, cwd) =>
   new Promise((done) => {
@@ -73,7 +83,7 @@ const runPi = (args, input, cwd) =>
 try {
   const { prompt, keepSession, rest } = split(process.argv.slice(2))
   if (!prompt) throw new Error('没给 --prompt：节点上的「提示词」还没接上')
-  const text = await fs.readFile(prompt, 'utf8').catch(() => null)
+  const text = await readPrompt(prompt)
   if (text === null) throw new Error(`提示词读不到：${prompt}`)
   // -p：说完就退。stdin 里那份正文就是 pi 的初始消息，多长、多少行都无所谓。
   // 留会话才不加 --no-session —— 默认不留：链会重跑，会话文件只会一路涨。
