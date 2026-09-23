@@ -83,7 +83,8 @@ export function applyVars(command, vars) {
       return raw
     }
     if (value.includes('\n')) {
-      problems.push(`${raw} 的值有换行，放不进命令行`)
+      // 光说「放不进命令行」等于把问题推回去：多行的值本来就有另一条路 —— 走 [[]] 传文件路径。
+      problems.push(`${raw} 的值有换行，放不进命令行 —— 多行的值改用 [[${name}]]，把那份文件的路径传过去`)
       return raw
     }
     return value

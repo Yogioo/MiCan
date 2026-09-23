@@ -1,5 +1,6 @@
 // 跑一条命令的唯一实现：链的运行器走这里，别在别处再 spawn 一次。
 // 命令行怎么起、输出怎么解码、怎么把整棵进程树收掉，都在这一个文件里。
+// stdout 与 stderr 是两回事：前者是节点给出去的值，后者是给人看的诊断。
 import { spawn } from 'node:child_process'
 
 const IS_WINDOWS = process.platform === 'win32'
@@ -60,7 +61,13 @@ function killTree(child) {
 
 // 起一条命令，返回 { done, stop }：done 是它跑完的 Promise，stop 掐掉整棵进程树。
 // onChunk 收增量输出（只为显示用，正文由这里自己攒）。
+//
+// **两条流走两条路**：stdout 是节点的值（进缓存文件、顺着数据边往下走），stderr 是诊断
+// （只在节点上显示、跑完存成 .log 边车文件）。所以扩展可以拿 stderr 吐人话的进度，
+// 值那一头照样是一段干净 JSON —— 见 docs/extension-contract.md 的输出契约。
+//
 // 超时和输出上限都在这儿管：超时掐进程；超上限只截断、不杀进程 —— 杀掉等于把 agent 的活白干了。
+// 上限是两条流合起来算的，一条话痨的诊断流别想把内存撑爆。
 // 命令读 stdin 的（如 pi -p）靠 stdin.end() 拿 EOF，否则会一直挂到超时。
 export function startCommand({ command, cwd, shell, timeout, outputLimit, onChunk }) {
   const launch = shellOf(shell, command) // 名字不认识就抛，调用方去报错
@@ -69,6 +76,7 @@ export function startCommand({ command, cwd, shell, timeout, outputLimit, onChun
 
   const decode = createDecoder()
   let output = ''
+  let log = ''
   let bytes = 0
   let code = 1
   let truncated = false
@@ -81,36 +89,33 @@ export function startCommand({ command, cwd, shell, timeout, outputLimit, onChun
     killTree(child)
   }, timeout * 1000)
 
-  function onData(chunk) {
-    if (truncated) return
-    const room = outputLimit - bytes
-    bytes += chunk.length
-    if (chunk.length > room) {
-      truncated = true
-      if (room > 0) {
-        const text = decode(chunk.subarray(0, room))
-        output += text
-        onChunk?.(text)
-      }
-      return
+  // kind：'out' 是值，'log' 是诊断。两条流共用一份字节预算，超了就一起截断。
+  function sink(kind) {
+    return (chunk) => {
+      if (truncated) return
+      const room = outputLimit - bytes
+      bytes += chunk.length
+      if (chunk.length > room) truncated = true
+      const text = decode(chunk.subarray(0, Math.max(room, 0)))
+      if (!text) return
+      if (kind === 'log') log += text
+      else output += text
+      onChunk?.(text, kind)
     }
-    const text = decode(chunk)
-    output += text
-    onChunk?.(text)
   }
-  child.stdout.on('data', onData)
-  child.stderr.on('data', onData)
+  child.stdout.on('data', sink('out'))
+  child.stderr.on('data', sink('log'))
 
   const done = new Promise((resolve) => {
     const finish = () => {
       if (settled) return
       settled = true
       clearTimeout(timer)
-      resolve({ code, failed: code !== 0 || timedOut || truncated || stopped, timedOut, truncated, stopped, output })
+      resolve({ code, failed: code !== 0 || timedOut || truncated || stopped, timedOut, truncated, stopped, output, log })
     }
-    // 起不来（命令行不存在之类）：当成退出码 1，错误正文写进输出，节点上看得见
+    // 起不来（命令行不存在之类）：当成退出码 1，错误写进诊断 —— 那是「为什么没跑成」，不是值
     child.on('error', (error) => {
-      output += error.message
+      log += error.message
       finish()
     })
     child.on('close', (value) => {

@@ -5,7 +5,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { routeFrom } from '../src/core/chain.mjs'
 import { dataInto, dataOut, execIn, execOutAll, extensionOf, findNode, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
-import { CANVAS_FILE, cacheFile } from '../src/core/paths.mjs'
+import { CANVAS_FILE, cacheFile, logFile } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { deserialize, resultMeta } from '../src/core/serialize.mjs'
 import { applyCanvas, canvas } from '../src/core/settings.mjs'
@@ -64,7 +64,10 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     const { graph, settings } = deserialize(JSON.parse(raw))
     applyCanvas(settings) // 步数上限、画布运行目录都在这份存档里
     for (const node of graph.nodes) {
-      if (node.result) node.result.output = await fs.readFile(path.join(root, cacheFile(node.id)), 'utf8').catch(() => '')
+      if (!node.result) continue
+      // 值是缓存文件，诊断是旁边的 .log —— 两份都读回来，节点上跑的痕迹刷新页面也还在
+      node.result.output = await fs.readFile(path.join(root, cacheFile(node.id)), 'utf8').catch(() => '')
+      node.result.log = await fs.readFile(path.join(root, logFile(node.id)), 'utf8').catch(() => '')
     }
     return graph
   }
@@ -145,7 +148,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     if (problems.length) return { error: `变量没对上：${problems.join('；')}` }
     const cwd = await resolveCwd(runDirOf(node)) // 运行目录不存在就停在起跑线上
 
-    run.current = { nodeId: id, output: '', startedAt, child: null }
+    run.current = { nodeId: id, output: '', log: '', startedAt, child: null }
     emit(run, { t: 'step', nodeId: id, step, startedAt, targets: targets.map((item) => item.id) })
     const settings = await readSettings()
     const child = startCommand({
@@ -154,9 +157,11 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       shell: settings.shell,
       timeout: settings.timeout,
       outputLimit: settings.outputLimitKb * 1024,
-      onChunk: (text) => {
-        run.current.output += text
-        emit(run, { t: 'chunk', nodeId: id, data: text })
+      onChunk: (text, stream) => {
+        // 值归 output，诊断归 log：两路分开攒，也分开告诉前端该往哪一栏放
+        if (stream === 'log') run.current.log += text
+        else run.current.output += text
+        emit(run, { t: 'chunk', nodeId: id, stream, data: text })
       },
     })
     run.current.child = child
@@ -169,6 +174,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       timedOut: record.timedOut,
       truncated: record.truncated,
       output: record.output,
+      log: record.log,
       command: injected.command, // 实际跑的命令（变量已替换），留着让节点上能回看
       at: Date.now(),
       elapsed: Date.now() - startedAt, // 跑完也留着，脚上照样看得到跑了多久
@@ -178,11 +184,13 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
 
   // 结果三处落地：裸输出进缓存文件、正文进下游文本节点的 md、元信息补进存档，
   // 然后告诉前端这一步完了。停止或失败都不覆写下游文本节点。
+  // 诊断（stderr）单独存成 .log，跟缓存文件挨着 —— 它不进值，只让人过后能翻。
   async function settle(run, node, result, targets) {
     node.result = result
     const cache = path.join(run.root, cacheFile(node.id))
     await fs.mkdir(path.dirname(cache), { recursive: true })
     await fs.writeFile(cache, result.output ?? '', 'utf8')
+    await fs.writeFile(path.join(run.root, logFile(node.id)), result.log ?? '', 'utf8')
     const written = result.failed ? [] : targets
     for (const item of written) {
       const file = path.join(run.root, item.file)

@@ -714,6 +714,11 @@ body.space-ready #viewport {
   color: #c0483d;
 }
 
+/* 正文里摆的是诊断流（stderr）而不是值：淡一点，跟真正的输出分开 */
+.node.kind-command .node-body.log {
+  color: #6b6b73;
+}
+
 .node.kind-command .node-body.failed {
   color: #c0483d;
 }

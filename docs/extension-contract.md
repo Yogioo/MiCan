@@ -96,7 +96,17 @@ node "<工作文件夹绝对路径>/extensions/git-status/run.mjs" --repo <边�
 
 ## 输出的契约
 
-**stdout 就是节点的值。** 约定：吐**一段 JSON**，并且永远让它是合法 JSON。
+**两条流走两条路：stdout 是值，stderr 是诊断。**
+
+- **stdout = 节点的值。** 约定：吐**一段 JSON**，并且永远让它是合法 JSON。
+- **stderr = 给人看的诊断。** 它不参与取值：带着淡色铺在节点的正文上，跑完存成缓存文件旁边的
+  `.log`（刷新页面也还在），但**缓存文件和下游拿到的都只有 stdout**。
+
+为什么分开：跑 agent、跑构建这类活的脚本，过程本身就该看得见——现在在干什么、第几步、
+调了哪个工具。写成 stdout 会把值弄脏（下游一提 JSON 就崩），藏在心里又是黑盒。
+所以**进度与日志一律写 stderr**，值那一头永远干净。
+[`builtin/extensions/pi/`](../builtin/extensions/pi/EXTENSION.md) 就是这么干的：`pi --mode json`
+的事件流全翻成人话写到 stderr，stdout 上只留最后那段 JSON。
 
 - **分路**：`{"verdict":"完成"}`，用提取节点取 `json:verdict`，取出来的那个单词就是执行边上的标签。取不到、取出来是多行，画布会**停下并报错**，不静默给空值。
 - **整份 JSON 往下传**：`[[结果]]` 拿到的就是缓存文件的绝对路径（JSON 是多行的，走不了 `{{}}`）。

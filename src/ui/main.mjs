@@ -152,10 +152,11 @@ function payload() {
     .map((node) => ({ file: node.file, content: node.text }))
   // 缓存文件就是节点的值：裸输出写文件，元信息在存档的 results 里。
   // 命令节点和提取节点都一样，所以过滤按「会不会跑」来，不按 kind 写死。
-  const cache = state.graph.nodes
-    .filter((node) => runnable(node) && node.result)
-    .map((node) => ({ id: node.id, content: node.result.output ?? '' }))
-  return { canvas: serialize(state), docs, cache }
+  // 两份文件一起推：.out 是值（stdout），.log 是诊断（stderr）—— 节点正文优先显示后者。
+  const ran = state.graph.nodes.filter((node) => runnable(node) && node.result)
+  const cache = ran.map((node) => ({ id: node.id, content: node.result.output ?? '' }))
+  const logs = ran.map((node) => ({ id: node.id, content: node.result.log ?? '' }))
+  return { canvas: serialize(state), docs, cache, logs }
 }
 
 function scheduleSave() {
@@ -268,9 +269,14 @@ async function loadWorkspace(path) {
   remember(response)
   const restored = response.canvas ? deserialize(response.canvas) : null
   const cache = response.cache ?? {}
-  // 元信息在存档里、裸输出在缓存文件里，两份合起来才是一个完整的结果
+  const logs = response.logs ?? {}
+  // 元信息在存档里、裸输出在缓存文件里、诊断在 .log 里，三份合起来才是一个完整的结果
   if (restored) {
-    for (const node of restored.graph.nodes) if (runnable(node) && node.result) node.result.output = cache[node.id] ?? ''
+    for (const node of restored.graph.nodes) {
+      if (!runnable(node) || !node.result) continue
+      node.result.output = cache[node.id] ?? ''
+      node.result.log = logs[node.id] ?? ''
+    }
     applyCanvas(restored.settings) // 跟这份画布走的设置（步数上限这类）跟着存档换
   }
   adoptWorkspace(response.root, restored ?? { graph: createGraph(), view: state.view })
@@ -531,13 +537,18 @@ function applyRunEvent(runId, event) {
       if (!node) return // 跑起来之前它可能已经被删了
       node.result = null // 上次输出先清掉，节点上只留命令，输出从头攒
       node.live = ''
+      node.liveLog = ''
       node.skipped = false
     })
     return
   }
   if (event.t === 'chunk') {
     const node = findNode(state.graph, event.nodeId)
-    if (node) node.live = `${node.live ?? ''}${event.data}`
+    // 诊断（stderr）和值（stdout）分开攒：节点正文优先显示诊断，值仍在缓存文件里等着下游
+    if (node) {
+      if (event.stream === 'log') node.liveLog = `${node.liveLog ?? ''}${event.data}`
+      else node.live = `${node.live ?? ''}${event.data}`
+    }
     repaint()
     return
   }
@@ -550,6 +561,7 @@ function applyRunEvent(runId, event) {
       if (node) {
         node.result = event.result // 裸输出进缓存文件、元信息进存档
         node.live = ''
+        node.liveLog = ''
       }
       for (const item of event.texts ?? []) setNodeText(draft.graph, item.nodeId, item.text)
     })

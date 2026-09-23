@@ -2,7 +2,7 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, cacheFile } from '../src/core/paths.mjs'
+import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, LOG_EXT, cacheFile, logFile } from '../src/core/paths.mjs'
 import { shellNames } from './exec.mjs'
 import { importExtension, listLibrary, scanExtensions } from './extensions.mjs'
 import { createRunner } from './runner.mjs'
@@ -70,7 +70,7 @@ export function createApi(initialRoot) {
       if ((await fs.readdir(target)).length > 0) throw new Error('目标文件夹不为空')
       root = target
       await scheduler.sync() // 新文件夹里没有画布，等于把上一份的时刻表全撤掉
-      return { root, canvas: null, cache: {}, recent: await remember(target) }
+      return { root, canvas: null, cache: {}, logs: {}, recent: await remember(target) }
     }
     const stat = await fs.stat(target).catch(() => null)
     if (!stat?.isDirectory()) throw new Error('文件夹不存在')
@@ -80,20 +80,22 @@ export function createApi(initialRoot) {
       .then((raw) => JSON.parse(raw))
       .catch(() => null) // 没有存档就是空文件夹，照样能打开
     await scheduler.sync() // 换了一份画布，时刻表跟着换
-    return { root, canvas, cache: await readCache(), recent: await remember(target) }
+    return { root, canvas, ...(await readCache()), recent: await remember(target) }
   }
 
-  // 缓存文件：命令节点上次跑出来的裸输出。节点上要显示它，[[ ]] 也指着它。
+  // 缓存目录是 MiCan 独占的，里面两种文件：.out 是值（stdout），.log 是诊断（stderr）。
   // 直接扫目录，不依赖「存档里记了哪些」—— 两次写之间断了也能把孤儿收回来。
   async function readCache() {
     const dir = path.join(root, CACHE_DIR)
     const cache = {}
+    const logs = {}
     for (const name of await fs.readdir(dir).catch(() => [])) {
-      if (!name.endsWith(CACHE_EXT)) continue
+      const into = name.endsWith(CACHE_EXT) ? cache : name.endsWith(LOG_EXT) ? logs : null
+      if (!into) continue
       const text = await fs.readFile(path.join(dir, name), 'utf8').catch(() => null)
-      if (text !== null) cache[name.slice(0, -CACHE_EXT.length)] = text
+      if (text !== null) into[name.slice(0, -path.extname(name).length)] = text
     }
-    return cache
+    return { cache, logs }
   }
 
   // 列目录：给界面里的「浏览…」用，只给子目录和外加的上层入口。
@@ -131,11 +133,12 @@ export function createApi(initialRoot) {
 
   // 前端把内存镜像整包推过来（ADR-0003）。跑链期间不然：运行器正在写的那些文件它不碰，
   // 否则会把它刚写下的盖回旧的（ADR-0009）。名单是「此刻」的，所以逐项现问，别提前算。
-  async function save({ canvas, docs = [], cache = [] }) {
+  async function save({ canvas, docs = [], cache = [], logs = [] }) {
     if (!root) throw new Error('还没有工作文件夹')
     const previous = await lastCanvas()
     docs = docs.filter((doc) => !runner.ownsFile(doc.file))
     cache = cache.filter((item) => !runner.owns(item.id))
+    logs = logs.filter((item) => !runner.owns(item.id))
 
     await fs.mkdir(path.join(root, DOCS_DIR), { recursive: true })
     for (const doc of docs) {
@@ -145,17 +148,23 @@ export function createApi(initialRoot) {
     }
 
     // 缓存文件：命令节点的裸输出，跑完一个写一个，[[ ]] 指着它要。
-    if (cache.length) await fs.mkdir(path.join(root, CACHE_DIR), { recursive: true })
+    if (cache.length || logs.length) await fs.mkdir(path.join(root, CACHE_DIR), { recursive: true })
     for (const item of cache) await fs.writeFile(inside(cacheFile(item.id)), item.content ?? '', 'utf8')
+    // 诊断（stderr）另存一份 .log：它不进值，只让人过后还能翻出这个节点当时在干什么。
+    for (const item of logs) await fs.writeFile(inside(logFile(item.id)), item.content ?? '', 'utf8')
 
     // 缓存目录是 MiCan 自己独占的，直接按目录清：存档没记上的孤儿也一并收掉。
     // docs 里混着用户自己放的文件，所以那边只能按「上次存档说是我的」来清。
+    // 两种后缀各清一遍：哪一份没跟上就删哪一份，别留半份。
     const cacheDir = path.join(root, CACHE_DIR)
-    const keepCache = new Set(cache.map((item) => item.id))
-    for (const name of await fs.readdir(cacheDir).catch(() => [])) {
-      const id = name.slice(0, -CACHE_EXT.length)
-      if (!name.endsWith(CACHE_EXT) || keepCache.has(id) || runner.owns(id)) continue
-      await fs.rm(path.join(cacheDir, name), { force: true })
+    for (const [ext, items] of [[CACHE_EXT, cache], [LOG_EXT, logs]]) {
+      const keep = new Set(items.map((item) => item.id))
+      for (const name of await fs.readdir(cacheDir).catch(() => [])) {
+        if (!name.endsWith(ext)) continue
+        const id = name.slice(0, -ext.length)
+        if (keep.has(id) || runner.owns(id)) continue
+        await fs.rm(path.join(cacheDir, name), { force: true })
+      }
     }
 
     // 只有文本节点才有 md 文件：按 file 存不存在判断，不能按 kind 反推 ——

@@ -91,15 +91,18 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     const content = bodyOutput(node, state)
     // 停止不算命令自己失败：留到一半的输出该照常看，不染红
     const failed = !running && Boolean(node.result?.failed) && !node.result?.stopped
+    const dim = showingLog(node, state)
     const body = el.querySelector('.node-body')
-    if (el._content !== content || el._failed !== failed) {
+    if (el._content !== content || el._failed !== failed || el._dim !== dim) {
       const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24
       body.textContent = content
       body.classList.toggle('empty', !content)
       body.classList.toggle('failed', failed)
+      body.classList.toggle('log', dim)
       if (atBottom) body.scrollTop = body.scrollHeight // 流式输出跟着尾巴走，但不抢用户翻上去的手
       el._content = content
       el._failed = failed
+      el._dim = dim
     }
     body.classList.toggle('need-cmd', !ext && !node.command) // 还没写命令时，占位文字改成提示怎么填
     el.classList.toggle('invalid', Boolean(ext) && !extName) // 坏引用标红（认不出的时间表也用这个类）
@@ -182,11 +185,18 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
   }
 
   // 会跑的节点正文里现在摆着的那段文字：命令节点运行中看增量、跑完看结果；提取节点只有取出来的值。
+  // **诊断（stderr）优先于值（stdout）**：跑 agent 这类命令时，人要看的是它在干什么；
+  // 值仍然是缓存文件里那段 JSON，这里显示什么不影响下游拿什么。
   // 渲染正文与「能不能选中」看的是同一份，所以两处共用一个函数。
   function bodyOutput(node, state) {
     if (node.kind === 'extract') return node.result?.output ?? ''
-    return state.running.has(node.id) ? node.live ?? '' : node.result?.output ?? ''
+    const running = state.running.has(node.id)
+    return (running ? node.liveLog : node.result?.log) || (running ? node.live : node.result?.output) || ''
   }
+
+  // 上面那段是不是诊断流 —— 是就用淡一点的颜色渲染，跟值分开。
+  const showingLog = (node, state) =>
+    node.kind !== 'extract' && Boolean(state.running.has(node.id) ? node.liveLog : node.result?.log)
 
   function describeResult(result) {
     if (!result) return ''
