@@ -675,6 +675,9 @@ window.addEventListener('keydown', (event) => {
     return
   }
   if (event.key === 'Delete' || event.key === 'Backspace') {
+    // 正文里选着字的时候，这一下是冲那段字来的，不是冲节点 —— 别删掉用户正要抄的东西
+    const picked = window.getSelection()
+    if (picked && !picked.isCollapsed) return
     event.preventDefault()
     deleteSelection()
   }

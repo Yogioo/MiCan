@@ -532,7 +532,6 @@ body.space-ready #viewport {
   font-size: 11px;
   white-space: nowrap;
   text-overflow: ellipsis;
-  cursor: text;
 }
 
 .node-file-input {
@@ -566,7 +565,6 @@ body.space-ready #viewport {
   line-height: 26px;
   white-space: nowrap;
   text-overflow: ellipsis;
-  user-select: text;
 }
 
 .node.kind-command .node-cmd::before {
@@ -685,6 +683,12 @@ body.space-ready #viewport {
   word-break: break-word;
 }
 
+/* 输出是给人看、给人抄的：允许选中复制，调试时最常干的事 */
+.node.kind-command .node-body,
+.node.kind-extract .node-body {
+  user-select: text;
+}
+
 .node.kind-command .node-body.empty::before {
   content: '还没有输出';
 }
@@ -746,6 +750,11 @@ body.space-ready #viewport {
 }
 
 .node.editing .node-handle {
+  display: none;
+}
+
+/* 编辑面盖在正文上：那些占位提示（双击编辑 / 还没有输出）先让开 */
+.node.editing .node-body::before {
   display: none;
 }
 

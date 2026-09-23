@@ -36,7 +36,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       el.classList.toggle('selected', state.selection.has(node.id))
       // 编辑中的节点正文归输入框管，这里不碰
       if (node.kind === 'text') renderText(el, node)
-      else if (node.kind === 'extract') renderExtract(el, node)
+      else if (node.kind === 'extract') renderExtract(el, node, state)
       else if (node.kind === 'entry') renderEntry(el, node, state)
       else if (node.kind === 'timer') renderTimer(el, node)
       else renderCommand(el, node, state)
@@ -88,7 +88,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     cmd.title = notes.join('\n')
 
     // 运行中看增量、跑完看结果，都没有就空着 —— 命令始终在上面那条里
-    const content = running ? node.live ?? '' : node.result ? node.result.output : ''
+    const content = bodyOutput(node, state)
     // 停止不算命令自己失败：留到一半的输出该照常看，不染红
     const failed = !running && Boolean(node.result?.failed) && !node.result?.stopped
     const body = el.querySelector('.node-body')
@@ -181,6 +181,13 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     return row
   }
 
+  // 会跑的节点正文里现在摆着的那段文字：命令节点运行中看增量、跑完看结果；提取节点只有取出来的值。
+  // 渲染正文与「能不能选中」看的是同一份，所以两处共用一个函数。
+  function bodyOutput(node, state) {
+    if (node.kind === 'extract') return node.result?.output ?? ''
+    return state.running.has(node.id) ? node.live ?? '' : node.result?.output ?? ''
+  }
+
   function describeResult(result) {
     if (!result) return ''
     const time = new Date(result.at).toTimeString().slice(0, 8)
@@ -192,13 +199,13 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
 
   // 提取节点：顶上一条取法（跟命令条同位），中间是取出来的值，底部一条时间。
   // 它不跑进程，所以没有退出码、没有运行中、也没有入口。
-  function renderExtract(el, node) {
+  function renderExtract(el, node, state) {
     const spec = node.pick ?? ''
     const bar = el.querySelector('.node-cmd')
     if (bar.textContent !== spec) bar.textContent = spec
     bar.title = spec ? `取法：${spec}` : '双击填写取法，如 json:isFull'
 
-    const content = node.result?.output ?? ''
+    const content = bodyOutput(node, state)
     const body = el.querySelector('.node-body')
     if (el._content !== content || el._failed !== false) {
       body.textContent = content
@@ -562,6 +569,17 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     // 输入端口的填值框：归它自己，别当成拖节点
     if (event.target.closest('.node-port-row')) {
       event.stopPropagation()
+      return
+    }
+
+    // 输出是给人看、给人抄的：从正文上按下的不当拖动，把选字让给浏览器，方便调试时复制。
+    // 拖动节点还有标题条和四周的边；正文空着时照旧整块都能拖。
+    const hasBody = node.kind === 'command' || node.kind === 'extract'
+    if (hasBody && event.target.closest('.node-body') && bodyOutput(node, getState())) {
+      event.stopPropagation()
+      update((state) => {
+        state.selection = new Set([id])
+      })
       return
     }
 
