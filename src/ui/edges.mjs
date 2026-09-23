@@ -28,7 +28,7 @@ export function mountEdges({ getState, update, onError }) {
       const { d, mid } = edgeGeometry(from, to, edge.kind)
       entry.hit.setAttribute('d', d)
       entry.line.setAttribute('d', d)
-      const selected = state.selection?.kind === 'edge' && state.selection.id === edge.id
+      const selected = state.selection.has(edge.id)
       entry.group.classList.toggle('selected', selected)
       entry.group.classList.toggle('exec', edge.kind === 'exec')
       entry.group.classList.toggle('data', edge.kind !== 'exec')
@@ -91,7 +91,7 @@ export function mountEdges({ getState, update, onError }) {
 
   function select(id) {
     update((state) => {
-      state.selection = { kind: 'edge', id }
+      state.selection = new Set([id])
     })
   }
 
@@ -191,7 +191,7 @@ export function mountEdges({ getState, update, onError }) {
     let created = null
     update((state) => {
       created = addEdge(state.graph, fromId, toId, kind)
-      if (created) state.selection = { kind: 'edge', id: created.id }
+      if (created) state.selection = new Set([created.id])
     })
     if (!created) onError(connectProblem(getState().graph, fromId, toId, kind) ?? '这条边连不上')
   }

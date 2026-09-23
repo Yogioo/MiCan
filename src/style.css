@@ -130,6 +130,16 @@ body.space-ready #viewport {
   transform-origin: 0 0;
 }
 
+/* 框选那个框：跟指针走，画在屏幕坐标里（不跟着 #world 的变换走），所以固定贴住视口。 */
+#marquee {
+  position: fixed;
+  z-index: 5;
+  border: 1px solid #4a7fe0;
+  background: rgb(74 127 224 / 10%);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
 #hint {
   position: absolute;
   top: 50%;

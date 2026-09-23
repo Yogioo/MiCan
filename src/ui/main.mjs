@@ -2,6 +2,7 @@
 import {
   createGraph,
   createNode,
+  findEdge,
   findNode,
   removeEdge,
   removeNode,
@@ -9,6 +10,7 @@ import {
   setNodeCwd,
   setNodeText,
 } from '../core/graph.mjs'
+import { curveHitsBox, edgeCurve, rectsOverlap } from '../core/geometry.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
 import { applyCanvas, applyMachine, canvas, machine } from '../core/settings.mjs'
 import { parseSchedule } from '../core/schedule.mjs'
@@ -24,7 +26,9 @@ import { askRunDir, askWorkspace } from './workspace-dialog.mjs'
 export const state = {
   view: createView(),
   graph: createGraph(),
-  selection: null,
+  // 选中的节点与边：一个 id 集合，空集合就是没选。节点 id（n 开头）与边 id（e 开头）
+  // 不重号，所以两类混在一处也认得出来，删的时候分开处理就是。
+  selection: new Set(),
   workspace: null, // 工作文件夹的绝对路径，未打开时为 null
   // 跟机器走的那些值（命令行、超时、界面手感）不住在这儿：它们住在 core/settings.mjs，现读现用；
   // 运行目录属于画布，在 canvas.cwd
@@ -198,7 +202,7 @@ function adoptWorkspace(root, next) {
   state.workspace = root
   state.graph = next.graph
   state.view = next.view
-  state.selection = null
+  state.selection = new Set()
   notify()
 }
 
@@ -290,24 +294,26 @@ function createNodeAt(world, kind) {
   })
   update((draft) => {
     draft.graph.nodes.push(node)
-    draft.selection = { kind: 'node', id: node.id }
+    draft.selection = new Set([node.id])
   })
 }
 
 function deleteSelection() {
-  const { selection } = state
-  if (!selection) return
+  if (!state.selection.size) return
   update((draft) => {
-    if (selection.kind === 'node') removeNode(draft.graph, selection.id)
-    else removeEdge(draft.graph, selection.id)
-    draft.selection = null
+    for (const id of [...state.selection]) {
+      // 边自己删；节点连它身上的边一起删（removeNode）—— 两类 id 混在一处，分得出来。
+      if (findEdge(draft.graph, id)) removeEdge(draft.graph, id)
+      else removeNode(draft.graph, id)
+    }
+    draft.selection = new Set()
   })
 }
 
 function clearSelection() {
-  if (!state.selection) return
+  if (!state.selection.size) return
   update((draft) => {
-    draft.selection = null
+    draft.selection = new Set()
   })
 }
 
@@ -595,7 +601,7 @@ function applyGraph(snapshot) {
     if ((runnable(node) || node.kind === 'timer') && kept.get(node.id)) node.result = kept.get(node.id)
   }
   state.graph = restored
-  state.selection = null
+  state.selection = new Set()
   lastRecord = 0 // 下一次改动重新开一步
   scheduleSave()
   notify()
@@ -638,6 +644,19 @@ mountCanvas({
   subscribe,
   onBackgroundPress: clearSelection,
   onBackgroundDblClick: (world) => createNodeAt(world, 'text'),
+  // 框选：世界坐标里跟框搭上边的节点与边都选中。按下时已经先把上一次的选择清掉了，
+  // 所以这一趟是「以框为准」，不是往上加。
+  // 节点比矩形，边比曲线（两边算的是同一根线）—— 框住一段就算，不要求整条都在框里。
+  onMarquee: (box) =>
+    update((draft) => {
+      const ids = draft.graph.nodes.filter((node) => rectsOverlap(box, node)).map((node) => node.id)
+      for (const edge of draft.graph.edges) {
+        const from = findNode(draft.graph, edge.from)
+        const to = findNode(draft.graph, edge.to)
+        if (from && to && curveHitsBox(edgeCurve(from, to, edge.kind), box)) ids.push(edge.id)
+      }
+      draft.selection = new Set(ids)
+    }),
   onResetZoom: resetZoom,
 })
 

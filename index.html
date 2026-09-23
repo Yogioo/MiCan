@@ -20,7 +20,7 @@
   </div>
   <div id="viewport">
     <div id="grid"></div>
-    <div id="hint">双击空白处新建文本节点，右键空白处新建命令节点<br>命令节点右侧两个点：上面拉执行边（定先后），下面拉数据边（传值）</div>
+    <div id="hint">双击空白处新建文本节点，右键空白处新建命令节点<br>命令节点右侧两个点：上面拉执行边（定先后），下面拉数据边（传值）<br>左键从空白处拖出个框，框住的节点和线一起选中，Delete 一起删；平移用中键或空格 + 拖动</div>
     <div id="world">
       <svg id="edges">
         <defs>
@@ -38,6 +38,7 @@
       <div id="labels"></div>
       <div id="nodes"></div>
     </div>
+    <div id="marquee" hidden></div>
     <div id="run-controls">
       <button id="btn-start" type="button" title="从入口节点出发跑完整条链路">开始</button>
       <button id="btn-stop" type="button" hidden title="把在跑的命令断掉；断到一半的输出留在节点上">停止</button>

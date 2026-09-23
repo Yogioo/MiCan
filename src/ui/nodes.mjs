@@ -31,7 +31,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       el.style.transform = `translate(${node.x}px, ${node.y}px)`
       el.style.width = `${node.w}px`
       el.style.height = `${node.h}px`
-      el.classList.toggle('selected', state.selection?.id === node.id)
+      el.classList.toggle('selected', state.selection.has(node.id))
       // 编辑中的节点正文归输入框管，这里不碰
       if (node.kind === 'text') renderText(el, node)
       else if (node.kind === 'extract') renderExtract(el, node)
@@ -456,7 +456,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     let moved = false
 
     update((state) => {
-      state.selection = { kind: 'node', id }
+      state.selection = new Set([id])
     })
 
     el.setPointerCapture(event.pointerId)
