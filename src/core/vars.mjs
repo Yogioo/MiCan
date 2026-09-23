@@ -18,9 +18,14 @@ function fileOf(workspace, file) {
 // 来路的两副面孔，取出来的都是同一样东西 { text, file }：
 // 文本节点的值是它那份 md，命令节点的值是它的缓存文件。所以两种节点共用一套 token 规则。
 // 命令节点没跑过就等于没有值，返回 null 让调用方去报错。
-function valueOf(workspace, source, fromPort = '', spec = '') {
+function valueOf(workspace, source, fromPort = '', spec = '', board = {}) {
   if (source.kind === 'text') {
     return { text: (source.text ?? '').trim(), file: fileOf(workspace, source.file ?? '') }
+  }
+  if (source.kind === 'get') {
+    const name = (source.slot ?? '').trim()
+    if (!name) return { error: '获取节点没有属性名' }
+    return { text: String(board[name] ?? '').trim(), file: fileOf(workspace, boardFile(name)) }
   }
   if (!source.result) return null
   const stdout = source.result.output ?? ''
@@ -62,7 +67,7 @@ export function collectVars(graph, id, workspace, defaults = {}, board = {}, sou
       errors.push(`「${edge.label}」的来路没有「${fromPort}」这个出口`)
       continue
     }
-    const value = valueOf(workspace, source, fromPort, spec)
+    const value = valueOf(workspace, source, fromPort, spec, board)
     if (!value) {
       errors.push(`「${edge.label}」的来路是命令节点，它还没跑过`)
       continue

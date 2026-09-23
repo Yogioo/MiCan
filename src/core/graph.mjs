@@ -25,10 +25,8 @@ export function createNode({ kind = 'text', x = 0, y = 0, w = machine.nodeDefaul
   return { id, kind: 'text', x, y, w, h, file: file || `docs/${id}.md`, text }
 }
 
-// 会跑的节点：命令节点跑命令，提取节点算它的值，获取 / 写入读写面板那份 md。
-// 判断「是不是会跑的节点」都走这里，别到处写 kind === 'command'。
-export const slotNode = (node) => node?.kind === 'get' || node?.kind === 'set'
-export const runnable = (node) => node?.kind === 'command' || node?.kind === 'extract' || slotNode(node)
+// 会跑的节点：命令、提取、写入。获取不是 —— 它像文本节点，值就是面板那份 md，不用跑。
+export const runnable = (node) => node?.kind === 'command' || node?.kind === 'extract' || node?.kind === 'set'
 
 // 触发节点：入口和定时器。一条链的两个起点 —— 只有执行出边，没有值、没有缓存文件、也没有数据端口。
 export const trigger = (node) => node?.kind === 'entry' || node?.kind === 'timer'
@@ -182,6 +180,8 @@ export function connectProblem(graph, from, to, kind, extras = {}) {
   if (kind === 'data') {
     // 触发节点没有值可传，也没有数据端口
     if (trigger(source) || trigger(target)) return '入口和定时器不传值（它们只有执行端口）'
+    // 获取像文本：只往外送，不接进来（写回去是写入节点的事）
+    if (target.kind === 'get') return '获取节点只往外送值，不接进来'
     if (fromPort) {
       if (source.kind !== 'command' || !extensionOf(source)) return '出口只能从扩展节点拉出'
       const names = extras.outputNames

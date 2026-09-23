@@ -70,7 +70,7 @@ const DATA_RATIO = 0.68
 
 export function portPoint(node, kind = 'data') {
   if (kind === 'exec') return { x: node.x + node.w, y: node.y + TITLE_MID }
-  const ratio = node.kind === 'text' ? 0.5 : DATA_RATIO
+  const ratio = node.kind === 'text' || node.kind === 'get' ? 0.5 : DATA_RATIO
   return { x: node.x + node.w, y: node.y + node.h * ratio }
 }
 

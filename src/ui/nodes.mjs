@@ -24,6 +24,12 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     for (const node of state.graph.nodes) {
       alive.add(node.id)
       let el = elements.get(node.id)
+      // 获取改过模板（不再带执行端口），旧 DOM 丢掉重画
+      if (el && node.kind === 'get' && !el.querySelector('.node-title')) {
+        el.remove()
+        elements.delete(node.id)
+        el = null
+      }
       if (!el) {
         el = createElement(node)
         el.dataset.id = node.id
@@ -37,7 +43,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       // 编辑中的节点正文归输入框管，这里不碰
       if (node.kind === 'text') renderText(el, node)
       else if (node.kind === 'extract') renderExtract(el, node, state)
-      else if (node.kind === 'get' || node.kind === 'set') renderSlot(el, node, state)
+      else if (node.kind === 'get') renderGet(el, node, state)
+      else if (node.kind === 'set') renderSlot(el, node, state)
       else if (node.kind === 'entry') renderEntry(el, node, state)
       else if (node.kind === 'timer') renderTimer(el, node)
       else renderCommand(el, node, state)
@@ -225,14 +232,14 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
   // 值仍然是缓存文件里那段 JSON，这里显示什么不影响下游拿什么。
   // 渲染正文与「能不能选中」看的是同一份，所以两处共用一个函数。
   function bodyOutput(node, state) {
-    if (node.kind === 'extract' || node.kind === 'get' || node.kind === 'set') return node.result?.output ?? ''
+    if (node.kind === 'extract' || node.kind === 'set') return node.result?.output ?? ''
     const running = state.running.has(node.id)
     return (running ? node.liveLog : node.result?.log) || (running ? node.live : node.result?.output) || ''
   }
 
   // 上面那段是不是诊断流 —— 是就用淡一点的颜色渲染，跟值分开。
   const showingLog = (node, state) =>
-    node.kind !== 'extract' && node.kind !== 'get' && node.kind !== 'set' && Boolean(state.running.has(node.id) ? node.liveLog : node.result?.log)
+    node.kind !== 'extract' && node.kind !== 'set' && Boolean(state.running.has(node.id) ? node.liveLog : node.result?.log)
 
   function describeResult(result) {
     if (!result) return ''
@@ -265,7 +272,22 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     el.querySelector('.node-foot').textContent = at ? `取值 · ${at}` : ''
   }
 
-  // 获取 / 写入：顶上是属性名，中间是那份 md 的正文。
+  function renderGet(el, node, state) {
+    const name = node.slot ?? ''
+    const file = el.querySelector('.node-file')
+    if (file.textContent !== name) file.textContent = name
+    const known = name && Object.prototype.hasOwnProperty.call(board, name)
+    el.classList.toggle('invalid', Boolean(name) && !known)
+    const content = name ? String(state.slots?.[name] ?? board[name] ?? '') : ''
+    const body = el.querySelector('.node-body')
+    if (el._text !== content) {
+      body.textContent = content
+      body.classList.toggle('empty', !content)
+      el._text = content
+    }
+  }
+
+  // 写入：顶上是属性名，中间是刚写进去的正文。
   function renderSlot(el, node, state) {
     const name = node.slot ?? ''
     const bar = el.querySelector('.node-cmd')
@@ -283,7 +305,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     el.classList.toggle('invalid', Boolean(name) && !known)
     el.classList.toggle('running', state.running.has(node.id))
     const at = node.result ? new Date(node.result.at).toTimeString().slice(0, 8) : ''
-    el.querySelector('.node-foot').textContent = at ? `${node.kind === 'get' ? '获取' : '写入'} · ${at}` : ''
+    el.querySelector('.node-foot').textContent = at ? `写入 · ${at}` : ''
   }
 
   // 入口节点：链的起点。它没有进程、没有值，只有一根执行出边；将来子图的入口也是它。
@@ -382,6 +404,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     el.innerHTML =
       node.kind === 'text'
         ? `<div class="node-title"><span class="node-file"></span></div><div class="node-body"></div>${TEXT_PORT}<div class="node-handle"></div>`
+        : node.kind === 'get'
+          ? `<div class="node-title"><span class="node-kind">获取</span><span class="node-file"></span></div><div class="node-body"></div>${TEXT_PORT}<div class="node-handle"></div>`
         : node.kind === 'entry'
           ? `<div class="node-title"><span class="node-kind">入口</span></div><div class="node-body"></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
           : node.kind === 'timer'
@@ -423,7 +447,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
         // 取法跟命令一样：也是整个正文区当编辑面，上面的取法条先让开
         beginBodyEdit(el, current.pick ?? '', (value) => update((state) => setNodePick(state.graph, current.id, value)), el.querySelector('.node-cmd'))
       } else if (current.kind === 'get' || current.kind === 'set') {
-        // 属性名跟面板走，节点上不改
+        // 属性名跟面板走，节点上不改；获取也不跑
       } else if (current.kind === 'timer') {
         // 定时器：控件就长在节点上，不用再开一层编辑面（双击落在控件上由它自己处理）
       } else if (current.kind === 'entry') {
@@ -594,8 +618,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     } else if (node.kind === 'extract') {
       // 提取节点没进程可跑，能做的只有「按现在的值重新取一次」
       items.push({ label: '运行提取', run: () => onRunCommand(node.id) })
-    } else if (node.kind === 'get' || node.kind === 'set') {
-      items.push({ label: node.kind === 'get' ? '运行获取' : '运行写入', run: () => onRunCommand(node.id) })
+    } else if (node.kind === 'set') {
+      items.push({ label: '运行写入', run: () => onRunCommand(node.id) })
     } else if (node.kind === 'entry' || node.kind === 'timer') {
       // 两枚触发节点都是链的起点，差别只在「什么时候点火」：入口靠人手，定时器到点自己跑。
       // 定时器也能手动点一下 —— 想验证配好的链不用等到点。

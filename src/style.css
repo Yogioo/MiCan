@@ -477,7 +477,8 @@ body.space-ready #viewport {
   border: 1.5px solid #9db6e4;
 }
 
-.node.kind-text .node-port.port-data {
+.node.kind-text .node-port.port-data,
+.node.kind-get .node-port.port-data {
   top: 50%;
 }
 
@@ -628,7 +629,8 @@ body.space-ready #viewport {
 }
 
 /* 文本节点：标题栏占顶部一条，正文从它下面开始 */
-.node.kind-text .node-body {
+.node.kind-text .node-body,
+.node.kind-get .node-body {
   top: 26px;
 }
 
@@ -668,7 +670,6 @@ body.space-ready #viewport {
 /* 会跑的节点：顶部一条主线（常驻，不被输出盖住），底部一条状态，中间是输出 */
 .node.kind-command .node-cmd,
 .node.kind-extract .node-cmd,
-.node.kind-get .node-cmd,
 .node.kind-set .node-cmd,
 .node.kind-timer .node-cmd {
   position: absolute;
@@ -704,14 +705,8 @@ body.space-ready #viewport {
   color: #c9bda2;
 }
 
-.node.kind-get .node-cmd,
 .node.kind-set .node-cmd {
   background: #f3f6fb;
-}
-
-.node.kind-get .node-cmd::before {
-  content: '获取 ';
-  color: #9aa8c4;
 }
 
 .node.kind-set .node-cmd::before {
@@ -810,7 +805,6 @@ body.space-ready #viewport {
 /* 会跑的节点和定时器：正文区从主线下边到状态脚上边 */
 .node.kind-command .node-body,
 .node.kind-extract .node-body,
-.node.kind-get .node-body,
 .node.kind-set .node-body {
   top: 26px;
   bottom: 24px;
@@ -839,7 +833,7 @@ body.space-ready #viewport {
 }
 
 .node.kind-get .node-body.empty::before {
-  content: '还没有读过这份属性';
+  content: '还没有值';
 }
 
 .node.kind-set .node-body.empty::before {
@@ -854,7 +848,6 @@ body.space-ready #viewport {
   content: '双击填写取法，如 json:isFull';
 }
 
-.node.kind-get .node-body.empty.need-cmd::before,
 .node.kind-set .node-body.empty.need-cmd::before {
   content: '从左侧面板拖一个属性过来';
 }
@@ -864,6 +857,11 @@ body.space-ready #viewport {
 .node.kind-get.invalid,
 .node.kind-set.invalid {
   border-color: #e0554a;
+}
+
+.node.kind-get .node-kind {
+  margin-right: 6px;
+  color: #6a7a9a;
 }
 
 .node.kind-timer.invalid .node-cmd {

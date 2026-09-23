@@ -5,7 +5,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { routeFrom } from '../src/core/chain.mjs'
 import { dataInto, dataOut, execIn, execOutAll, extensionOf, findNode, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
-import { CANVAS_FILE, boardFile, cacheFile, logFile, portFile } from '../src/core/paths.mjs'
+import { CANVAS_FILE, cacheFile, logFile, portFile } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { deserialize, resultMeta } from '../src/core/serialize.mjs'
 import { applyCanvas, canvas } from '../src/core/settings.mjs'
@@ -87,19 +87,24 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
   // ---- 值 ----
 
   // 一个节点的值的正文：文本节点是那份 md，会跑的节点是最近一次运行的输出。
-  const valueText = (node) => (!node ? '' : node.kind === 'text' ? (node.text ?? '') : (node.result?.output ?? ''))
+  const valueText = (node, board = {}) => {
+    if (!node) return ''
+    if (node.kind === 'text') return node.text ?? ''
+    if (node.kind === 'get') return String(board[node.slot] ?? '')
+    return node.result?.output ?? ''
+  }
   // 提取节点的源：默认取执行来路那个节点的值（先后由执行边给），有数据入边就用那份文本。
   // 入边写了出口名，就只拿那一个出口（可以多行；提取自己的取法再收成单行）。
   async function sourceTextOf(run, id) {
     const edge = dataInto(run.graph, id)[0]
     if (edge) {
       const source = findNode(run.graph, edge.from)
-      if (!edge.fromPort) return { text: valueText(source) }
+      if (!edge.fromPort) return { text: valueText(source, run.board) }
       const picked = await pickPort(run, source, edge.fromPort, { multiline: true })
       return picked.error ? picked : { text: picked.value }
     }
     const inEdge = execIn(run.graph, id)
-    return { text: inEdge ? valueText(findNode(run.graph, inEdge.from)) : '' }
+    return { text: inEdge ? valueText(findNode(run.graph, inEdge.from), run.board) : '' }
   }
 
   async function outputsOf(run, node) {
@@ -161,27 +166,14 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       return { ...(await settle(run, node, { output: value, at: Date.now(), elapsed: Date.now() - startedAt }, outEdges)), targets: targets.length }
     }
 
-    if (node.kind === 'get' || node.kind === 'set') {
+    if (node.kind === 'set') {
       const name = (node.slot ?? '').trim()
-      if (!name) return { error: node.kind === 'get' ? '这个获取节点没有属性名' : '这个写入节点没有属性名' }
-      let output = ''
-      if (node.kind === 'get') {
-        const file = path.join(run.root, boardFile(name))
-        const fromDisk = await fs.readFile(file, 'utf8').catch(() => null)
-        if (fromDisk !== null) output = fromDisk
-        else {
-          const fallback = String(run.board[name] ?? '').trim()
-          if (!fallback) return { error: `面板「${name}」还没有值` }
-          output = fallback
-          await writeSlot(run.root, name, output)
-        }
-      } else {
-        const source = await sourceTextOf(run, id)
-        if (source.error) return { error: source.error }
-        output = source.text ?? ''
-        await writeSlot(run.root, name, output)
-        run.board[name] = output
-      }
+      if (!name) return { error: '这个写入节点没有属性名' }
+      const source = await sourceTextOf(run, id)
+      if (source.error) return { error: source.error }
+      const output = source.text ?? ''
+      await writeSlot(run.root, name, output)
+      run.board[name] = output
       return { ...(await settle(run, node, { output, at: Date.now(), elapsed: Date.now() - startedAt }, outEdges)), targets: targets.length }
     }
 

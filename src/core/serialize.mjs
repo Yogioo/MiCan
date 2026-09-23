@@ -162,13 +162,17 @@ export function deserialize(data) {
   const kindOf = new Map(nodes.map((node) => [node.id, node.kind]))
   const isRunnable = (id) => {
     const kind = kindOf.get(id)
-    return kind === 'command' || kind === 'extract' || kind === 'get' || kind === 'set'
+    return kind === 'command' || kind === 'extract' || kind === 'set'
   }
   // 触发节点是起点：进来一根执行边、或跟它传数据，都是没意义的状态，载入时直接丢掉。
+  // 获取像文本：只出数据，不接数据，也不走执行边。
   const edgeOk = (kind, from, to) => {
     const a = kindOf.get(from)
     const b = kindOf.get(to)
-    if (kind === 'data') return !(a === 'entry' || a === 'timer' || b === 'entry' || b === 'timer')
+    if (kind === 'data') {
+      if (a === 'entry' || a === 'timer' || b === 'entry' || b === 'timer') return false
+      return b !== 'get'
+    }
     if (a === 'entry' || a === 'timer') return isRunnable(to)
     return isRunnable(from) && isRunnable(to)
   }
