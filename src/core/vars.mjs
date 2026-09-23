@@ -2,7 +2,7 @@
 // 节点自己也可以填常量（端口左边的那些框），填了就不必接边。
 // 命令节点里写 pi --skill {{技能A}}，跑之前被替换掉；替换只发生在运行时，不写回命令。
 import { dataInto, findNode } from './graph.mjs'
-import { cacheFile, portFile } from './paths.mjs'
+import { boardFile, cacheFile, portFile } from './paths.mjs'
 import { pickValue } from './pick.mjs'
 import { TOKEN } from './tokens.mjs'
 
@@ -78,7 +78,7 @@ export function collectVars(graph, id, workspace, defaults = {}, board = {}, sou
   for (const [name, raw] of Object.entries(board)) {
     const text = String(raw ?? '').trim()
     if (!text || vars.has(name) || fromEdges.has(name)) continue
-    vars.set(name, { text, file: text })
+    vars.set(name, { text, file: fileOf(workspace, boardFile(name)) })
   }
   for (const [name, raw] of Object.entries(defaults)) {
     const text = String(raw ?? '').trim()

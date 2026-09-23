@@ -12,3 +12,6 @@ export const cacheFile = (id) => `${CACHE_DIR}/${id}${CACHE_EXT}`
 export const logFile = (id) => `${CACHE_DIR}/${id}${LOG_EXT}`
 // 出口的边车：挨着缓存文件，一份对一个出口。节点的值仍是那份 .out。
 export const portFile = (id, port) => `${CACHE_DIR}/${id}.${String(port).replace(/[\\/]/g, '_')}${CACHE_EXT}`
+// 面板属性的值：一份对一个名字，跟节点缓存分开，换工作文件夹也在。
+export const BOARD_DIR = `${CACHE_DIR}/board`
+export const boardFile = (name) => `${BOARD_DIR}/${String(name).replace(/[\\/]/g, '_')}.md`

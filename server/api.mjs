@@ -5,6 +5,7 @@ import path from 'node:path'
 import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, LOG_EXT, cacheFile, logFile } from '../src/core/paths.mjs'
 import { shellNames } from './exec.mjs'
 import { importExtension, listLibrary, scanExtensions } from './extensions.mjs'
+import { deleteSlot, readSlots, renameSlot, writeSlot } from './board-slots.mjs'
 import { createRunner } from './runner.mjs'
 import { createScheduler } from './scheduler.mjs'
 
@@ -70,7 +71,7 @@ export function createApi(initialRoot) {
       if ((await fs.readdir(target)).length > 0) throw new Error('目标文件夹不为空')
       root = target
       await scheduler.sync() // 新文件夹里没有画布，等于把上一份的时刻表全撤掉
-      return { root, canvas: null, cache: {}, logs: {}, recent: await remember(target) }
+      return { root, canvas: null, cache: {}, logs: {}, slots: {}, recent: await remember(target) }
     }
     const stat = await fs.stat(target).catch(() => null)
     if (!stat?.isDirectory()) throw new Error('文件夹不存在')
@@ -80,7 +81,7 @@ export function createApi(initialRoot) {
       .then((raw) => JSON.parse(raw))
       .catch(() => null) // 没有存档就是空文件夹，照样能打开
     await scheduler.sync() // 换了一份画布，时刻表跟着换
-    return { root, canvas, ...(await readCache()), recent: await remember(target) }
+    return { root, canvas, ...(await readCache()), slots: await readSlots(target), recent: await remember(target) }
   }
 
   // 缓存目录是 MiCan 独占的，里面两种文件：.out 是值（stdout），.log 是诊断（stderr）。
@@ -314,6 +315,28 @@ export function createApi(initialRoot) {
       if (route === '/api/save') {
         await save(body)
         return send(res, 200, { ok: true })
+      }
+      if (route === '/api/board') {
+        if (!root) throw new Error('还没有工作文件夹')
+        const action = body.action
+        if (action === 'read') return send(res, 200, { values: await readSlots(root) })
+        const name = typeof body.name === 'string' ? body.name.trim() : ''
+        if (action === 'write') {
+          if (!name || /[\\/\n]/.test(name)) throw new Error('属性名不合法')
+          await writeSlot(root, name, typeof body.value === 'string' ? body.value : '')
+          return send(res, 200, { ok: true })
+        }
+        if (action === 'delete') {
+          if (name) await deleteSlot(root, name)
+          return send(res, 200, { ok: true })
+        }
+        if (action === 'rename') {
+          const to = typeof body.to === 'string' ? body.to.trim() : ''
+          if (!name || !to || /[\\/\n]/.test(to)) throw new Error('属性名不合法')
+          await renameSlot(root, name, to)
+          return send(res, 200, { ok: true })
+        }
+        throw new Error('不认识的面板动作')
       }
       if (route === '/api/runs') return send(res, 200, { items: runner.list(), triggers: scheduler.triggers() })
       if (route === '/api/run') return send(res, 200, await runner.start({ id: body.id, mode: body.mode }))

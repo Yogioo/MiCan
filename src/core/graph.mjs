@@ -15,18 +15,20 @@ export function createGraph() {
   return { nodes: [], edges: [] }
 }
 
-export function createNode({ kind = 'text', x = 0, y = 0, w = machine.nodeDefaultW, h = machine.nodeDefaultH, text = '', command = '', cwd = '', extension = '', file = '', pick = '', schedule = '' } = {}) {
+export function createNode({ kind = 'text', x = 0, y = 0, w = machine.nodeDefaultW, h = machine.nodeDefaultH, text = '', command = '', cwd = '', extension = '', file = '', pick = '', schedule = '', slot = '' } = {}) {
   const id = newId('n')
   if (kind === 'command') return { id, kind, x, y, w, h, command, cwd, extension, consts: {} }
   if (kind === 'extract') return { id, kind, x, y, w, h, pick }
+  if (kind === 'get' || kind === 'set') return { id, kind, x, y, w, h, slot }
   if (kind === 'entry') return { id, kind, x, y, w, h }
   if (kind === 'timer') return { id, kind, x, y, w, h, schedule: schedule || DEFAULT_SCHEDULE }
   return { id, kind: 'text', x, y, w, h, file: file || `docs/${id}.md`, text }
 }
 
-// 会跑的节点：命令节点跑命令，提取节点算它的值。两者都能进链，都有值和缓存文件。
+// 会跑的节点：命令节点跑命令，提取节点算它的值，获取 / 写入读写面板那份 md。
 // 判断「是不是会跑的节点」都走这里，别到处写 kind === 'command'。
-export const runnable = (node) => node?.kind === 'command' || node?.kind === 'extract'
+export const slotNode = (node) => node?.kind === 'get' || node?.kind === 'set'
+export const runnable = (node) => node?.kind === 'command' || node?.kind === 'extract' || slotNode(node)
 
 // 触发节点：入口和定时器。一条链的两个起点 —— 只有执行出边，没有值、没有缓存文件、也没有数据端口。
 export const trigger = (node) => node?.kind === 'entry' || node?.kind === 'timer'
@@ -193,7 +195,7 @@ export function connectProblem(graph, from, to, kind, extras = {}) {
   // 两者在边上完全同一套，差别只在「什么时候点火」：入口靠人手（以后是子图被调用），定时器到点自己跑。
   if (trigger(source)) {
     const name = source.kind === 'timer' ? '定时器' : '入口'
-    if (!runnable(target)) return `${name}只能连会跑的节点（命令节点或提取节点）`
+    if (!runnable(target)) return `${name}只能连会跑的节点`
     return execOutAll(graph, from).length ? `${name}只能有一根执行出边` : null
   }
   if (!runnable(source)) return '执行边只能从会跑的节点、入口或定时器出发'

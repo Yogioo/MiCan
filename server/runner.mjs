@@ -5,12 +5,13 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { routeFrom } from '../src/core/chain.mjs'
 import { dataInto, dataOut, execIn, execOutAll, extensionOf, findNode, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
-import { CANVAS_FILE, cacheFile, logFile, portFile } from '../src/core/paths.mjs'
+import { CANVAS_FILE, boardFile, cacheFile, logFile, portFile } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { deserialize, resultMeta } from '../src/core/serialize.mjs'
 import { applyCanvas, canvas } from '../src/core/settings.mjs'
 import { applyVars, collectVars } from '../src/core/vars.mjs'
 import { startCommand } from './exec.mjs'
+import { liveBoard, writeSlot } from './board-slots.mjs'
 import { commandOf } from './extensions.mjs'
 
 // 跑完的记录留一会儿再扔：事件流断过的页面重连时还补得上最后那句话。
@@ -69,7 +70,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       node.result.output = await fs.readFile(path.join(root, cacheFile(node.id)), 'utf8').catch(() => '')
       node.result.log = await fs.readFile(path.join(root, logFile(node.id)), 'utf8').catch(() => '')
     }
-    return { graph, board: board && typeof board === 'object' ? board : {} }
+    const declared = board && typeof board === 'object' ? board : {}
+    return { graph, board: await liveBoard(root, declared) }
   }
 
   // 存档的补写：只动这次跑出来的那两处（results 里的一格、下游文本节点的正文）。
@@ -157,6 +159,30 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       const { value, error } = pickValue(source.text, node.pick ?? '')
       if (error) return { error: `提取不出值：${error}` }
       return { ...(await settle(run, node, { output: value, at: Date.now(), elapsed: Date.now() - startedAt }, outEdges)), targets: targets.length }
+    }
+
+    if (node.kind === 'get' || node.kind === 'set') {
+      const name = (node.slot ?? '').trim()
+      if (!name) return { error: node.kind === 'get' ? '这个获取节点没有属性名' : '这个写入节点没有属性名' }
+      let output = ''
+      if (node.kind === 'get') {
+        const file = path.join(run.root, boardFile(name))
+        const fromDisk = await fs.readFile(file, 'utf8').catch(() => null)
+        if (fromDisk !== null) output = fromDisk
+        else {
+          const fallback = String(run.board[name] ?? '').trim()
+          if (!fallback) return { error: `面板「${name}」还没有值` }
+          output = fallback
+          await writeSlot(run.root, name, output)
+        }
+      } else {
+        const source = await sourceTextOf(run, id)
+        if (source.error) return { error: source.error }
+        output = source.text ?? ''
+        await writeSlot(run.root, name, output)
+        run.board[name] = output
+      }
+      return { ...(await settle(run, node, { output, at: Date.now(), elapsed: Date.now() - startedAt }, outEdges)), targets: targets.length }
     }
 
     // 命令从哪来：手写的在节点上；引用扩展的现读那份清单拼一条 —— 节点存的是引用，

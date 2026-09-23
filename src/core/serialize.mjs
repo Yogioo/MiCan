@@ -31,6 +31,8 @@ export function serialize(state) {
           }
         : node.kind === 'extract'
           ? { pick: node.pick ?? '' }
+          : node.kind === 'get' || node.kind === 'set'
+            ? { slot: node.slot ?? '' }
           : node.kind === 'timer'
             ? { schedule: node.schedule ?? '' }
             : node.kind === 'entry'
@@ -73,9 +75,9 @@ export function triggerMeta(node) {
 export function resultMeta(node) {
   const { code, failed, timedOut, truncated, at, elapsed, command } = node.result
   // 提取节点不 spawn 进程，没有退出码可报，只记时间
-  return node.kind === 'extract'
-    ? { at, elapsed }
-    : { code, failed: Boolean(failed), timedOut: Boolean(timedOut), truncated: Boolean(truncated), at, elapsed, command }
+  return node.kind === 'command'
+    ? { code, failed: Boolean(failed), timedOut: Boolean(timedOut), truncated: Boolean(truncated), at, elapsed, command }
+    : { at, elapsed }
 }
 
 // 端口上填的常量：非空的字符串才写进存档，一个都没有就不写这个键。
@@ -123,6 +125,9 @@ export function deserialize(data) {
     if (node.kind === 'extract') {
       return { id: node.id, kind: 'extract', x: node.x, y: node.y, ...size, pick: typeof node.pick === 'string' ? node.pick : '' }
     }
+    if (node.kind === 'get' || node.kind === 'set') {
+      return { id: node.id, kind: node.kind, x: node.x, y: node.y, ...size, slot: typeof node.slot === 'string' ? node.slot : '' }
+    }
     if (node.kind === 'entry') return { id: node.id, kind: 'entry', x: node.x, y: node.y, ...size }
     if (node.kind === 'timer') {
       return {
@@ -155,7 +160,10 @@ export function deserialize(data) {
 
   const ids = new Set(nodes.map((node) => node.id))
   const kindOf = new Map(nodes.map((node) => [node.id, node.kind]))
-  const isRunnable = (id) => kindOf.get(id) === 'command' || kindOf.get(id) === 'extract'
+  const isRunnable = (id) => {
+    const kind = kindOf.get(id)
+    return kind === 'command' || kind === 'extract' || kind === 'get' || kind === 'set'
+  }
   // 触发节点是起点：进来一根执行边、或跟它传数据，都是没意义的状态，载入时直接丢掉。
   const edgeOk = (kind, from, to) => {
     const a = kindOf.get(from)

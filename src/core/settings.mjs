@@ -101,15 +101,15 @@ export function applyCanvas(data) {
   return canvas
 }
 
-// 外来的存档：只认非空单行字符串；重名以后来的为准。
+// 外来的存档：只认单行字符串（空串是「有这个名字、还没默认值」）；重名以后来的为准。
 export function boardIn(data) {
   const out = {}
   if (!data || typeof data !== 'object' || Array.isArray(data)) return out
   for (const [key, value] of Object.entries(data)) {
     if (typeof value !== 'string') continue
-    const text = value.trim()
-    if (!key || !text || text.includes('\n')) continue
-    out[key] = text
+    const name = String(key).trim()
+    if (!name || /[\\/\n]/.test(name) || value.includes('\n')) continue
+    out[name] = value.trim()
   }
   return out
 }

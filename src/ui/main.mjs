@@ -15,10 +15,11 @@ import { curveHitsBox, edgeCurve, rectsOverlap } from '../core/geometry.mjs'
 import { inputsOf, outputsOf, sourcePortIndex, targetPortIndex } from '../core/inputs.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
 import { applyPaste, snapshotSelection } from '../core/duplicate.mjs'
-import { applyBoard, applyCanvas, applyMachine, board, canvas, machine } from '../core/settings.mjs'
+import { applyBoard, applyCanvas, applyMachine, canvas, machine } from '../core/settings.mjs'
 import { parseSchedule } from '../core/schedule.mjs'
 import { createHistory, push, redo as redoHistory, undo as undoHistory } from '../core/history.mjs'
 import { createView, zoomAt } from '../core/view.mjs'
+import { mountBoard } from './board.mjs'
 import { mountCanvas } from './canvas.mjs'
 import { mountEdges } from './edges.mjs'
 import { mountNodes } from './nodes.mjs'
@@ -33,6 +34,7 @@ export const state = {
   // 不重号，所以两类混在一处也认得出来，删的时候分开处理就是。
   selection: new Set(),
   workspace: null, // 工作文件夹的绝对路径，未打开时为 null
+  slots: {}, // 面板属性此刻盘上的正文（.mican/board/<名字>.md），不进存档
   // 工作文件夹里 extensions/ 扫出来的菜单树（扩展）：{ items, problems }。跟着工作文件夹走，不进存档
   extensions: { items: [], problems: [] },
   // 跟机器走的那些值（命令行、超时、界面手感）不住在这儿：它们住在 core/settings.mjs，现读现用；
@@ -284,6 +286,7 @@ async function loadWorkspace(path) {
   } else {
     applyBoard(null)
   }
+  state.slots = response.slots ?? {}
   adoptWorkspace(response.root, restored ?? { graph: createGraph(), view: state.view })
   return restored
 }
@@ -334,10 +337,15 @@ async function openStartupWorkspace() {
 // ---- 节点 ----
 
 function createNodeAt(world, kind, extra = {}) {
+  const compact = kind === 'get' || kind === 'set'
+  const w = compact ? 200 : machine.nodeDefaultW
+  const h = compact ? 88 : machine.nodeDefaultH
   const node = createNode({
     kind,
-    x: world.x - machine.nodeDefaultW / 2,
-    y: world.y - machine.nodeDefaultH / 2,
+    x: world.x - w / 2,
+    y: world.y - h / 2,
+    w,
+    h,
     ...extra,
   })
   // 清单里的默认值**不**填进节点：那个框留空，跑的时候由后端拿默认值兜底（ADR-0015）。
@@ -613,6 +621,7 @@ function applyRunEvent(runId, event) {
     // 只有自己发起的才报结束语：定时器一秒一条，报了就是在工具条上刷屏
     if (startedHere.delete(runId)) showMessage(event.message)
     update(() => {})
+    refreshSlots()
   }
 }
 
@@ -631,19 +640,58 @@ function repaint() {
 async function openSettings() {
   try {
     const saved = await askSettings({
-      current: { machine, canvas, board },
+      current: { machine, canvas },
       hasWorkspace: Boolean(state.workspace),
       onImported: loadExtensions, // 拷进来的插件要马上出现在右键菜单里
     })
     if (!saved) return
     applyMachine(saved.machine) // 跟机器走的：后端刚存下来，以后每次跑命令它自己去读
     applyCanvas(saved.canvas) // 跟画布走的：收进内存，下面一次落盘就写进存档
-    applyBoard(saved.board) // 面板跟画布走，不进撤销栈（跟存档配置同一条路）
     scheduleSave()
     notify()
     showMessage('设置已保存')
   } catch (error) {
     showMessage(`读设置失败：${error.message}`)
+  }
+}
+
+// 面板：声明进存档（不进撤销），值立刻写到 .mican/board/<名字>.md。
+function changeBoard(next, disk) {
+  applyBoard(next)
+  scheduleSave()
+  notify()
+  if (!disk || !state.workspace) return
+  const job = disk.write !== undefined
+    ? api('/api/board', { action: 'write', name: disk.write, value: disk.value ?? '' }).then(() => {
+      state.slots[disk.write] = disk.value ?? ''
+    })
+    : disk.delete
+      ? api('/api/board', { action: 'delete', name: disk.delete }).then(() => {
+        delete state.slots[disk.delete]
+      })
+      : disk.rename
+        ? api('/api/board', { action: 'rename', name: disk.rename, to: disk.to }).then(() => {
+          if (state.slots[disk.rename] !== undefined) {
+            state.slots[disk.to] = state.slots[disk.rename]
+            delete state.slots[disk.rename]
+          }
+          update((draft) => {
+            for (const node of draft.graph.nodes) {
+              if ((node.kind === 'get' || node.kind === 'set') && node.slot === disk.rename) node.slot = disk.to
+            }
+          })
+        })
+        : Promise.resolve()
+  job.then(() => notify()).catch((error) => showMessage(`面板没写上：${error.message}`))
+}
+
+async function refreshSlots() {
+  if (!state.workspace) return
+  try {
+    state.slots = (await api('/api/board', { action: 'read' })).values ?? {}
+    notify()
+  } catch {
+    // 读不到就留着内存里这份
   }
 }
 
@@ -794,6 +842,11 @@ const nodes = mountNodes({
   onSetRunDir: setRunDir,
 })
 const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, start: startFromEntries, stop: stopRunning } })
+const boardPanel = mountBoard({
+  getState: () => state,
+  onChange: changeBoard,
+  onDropNode: (world, kind, slot) => createNodeAt(world, kind, { slot }),
+})
 // 设置要先读到（全局运行目录、启动要打开哪个工作文件夹都在里面），所以这几句串起来做
 // 最后一句把后端还在跑的链接回来：页面关着的时候它可能已经跑起来了（ADR-0009）。
 loadRecent()
@@ -809,3 +862,4 @@ subscribe((next) => {
 subscribe(edges.render)
 subscribe(nodes.render)
 subscribe(toolbar.render)
+subscribe(boardPanel.render)

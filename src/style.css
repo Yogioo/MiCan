@@ -76,6 +76,93 @@ body {
   text-align: right;
 }
 
+#board {
+  position: fixed;
+  top: 56px;
+  left: 12px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  width: 248px;
+  max-height: calc(100vh - 80px);
+  border: 1px solid #e4e4df;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 6%);
+  font-size: 12px;
+}
+
+#board[hidden] {
+  display: none;
+}
+
+.board-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  border-bottom: 1px solid #f0f0ec;
+  color: #4a4a45;
+  font-weight: 600;
+  user-select: none;
+}
+
+.board-add,
+.board-del,
+.board-set {
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #8a8a84;
+  font: inherit;
+  cursor: pointer;
+}
+
+.board-add:hover,
+.board-del:hover,
+.board-set:hover {
+  background: #f0f0ec;
+  color: var(--ink);
+}
+
+.board-list {
+  overflow: auto;
+  padding: 6px;
+}
+
+.board-row {
+  display: grid;
+  grid-template-columns: 12px 1fr 1fr auto auto;
+  gap: 4px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.board-grip {
+  width: 8px;
+  height: 16px;
+  border-radius: 2px;
+  background: repeating-linear-gradient(to bottom, #d0d0ca 0 2px, transparent 2px 4px);
+  cursor: grab;
+}
+
+.board-row input {
+  min-width: 0;
+  padding: 3px 5px;
+  border: 1px solid #e4e4df;
+  border-radius: 5px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+
+.board-note {
+  padding: 4px 8px 6px;
+  color: #9a9a94;
+  font-size: 11px;
+}
+
 #workspace-path {
   max-width: 340px;
   margin-left: 8px;
@@ -581,6 +668,8 @@ body.space-ready #viewport {
 /* 会跑的节点：顶部一条主线（常驻，不被输出盖住），底部一条状态，中间是输出 */
 .node.kind-command .node-cmd,
 .node.kind-extract .node-cmd,
+.node.kind-get .node-cmd,
+.node.kind-set .node-cmd,
 .node.kind-timer .node-cmd {
   position: absolute;
   top: 0;
@@ -613,6 +702,21 @@ body.space-ready #viewport {
 .node.kind-extract .node-cmd::before {
   content: '取法 ';
   color: #c9bda2;
+}
+
+.node.kind-get .node-cmd,
+.node.kind-set .node-cmd {
+  background: #f3f6fb;
+}
+
+.node.kind-get .node-cmd::before {
+  content: '获取 ';
+  color: #9aa8c4;
+}
+
+.node.kind-set .node-cmd::before {
+  content: '写入 ';
+  color: #9aa8c4;
 }
 
 /* 定时器：顶上写的是人话（「每 30 分钟」），底色跟提取节点一致 */
@@ -705,7 +809,9 @@ body.space-ready #viewport {
 
 /* 会跑的节点和定时器：正文区从主线下边到状态脚上边 */
 .node.kind-command .node-body,
-.node.kind-extract .node-body {
+.node.kind-extract .node-body,
+.node.kind-get .node-body,
+.node.kind-set .node-body {
   top: 26px;
   bottom: 24px;
   padding-top: 10px;
@@ -718,7 +824,9 @@ body.space-ready #viewport {
 
 /* 输出是给人看、给人抄的：允许选中复制，调试时最常干的事 */
 .node.kind-command .node-body,
-.node.kind-extract .node-body {
+.node.kind-extract .node-body,
+.node.kind-get .node-body,
+.node.kind-set .node-body {
   user-select: text;
 }
 
@@ -730,6 +838,14 @@ body.space-ready #viewport {
   content: '还没有取过值';
 }
 
+.node.kind-get .node-body.empty::before {
+  content: '还没有读过这份属性';
+}
+
+.node.kind-set .node-body.empty::before {
+  content: '还没有写过这份属性';
+}
+
 .node.kind-command .node-body.empty.need-cmd::before {
   content: '双击填写命令';
 }
@@ -738,8 +854,15 @@ body.space-ready #viewport {
   content: '双击填写取法，如 json:isFull';
 }
 
+.node.kind-get .node-body.empty.need-cmd::before,
+.node.kind-set .node-body.empty.need-cmd::before {
+  content: '从左侧面板拖一个属性过来';
+}
+
 /* 时间表认不出来（比如手改坏的存档）：标红，不静默当成没设 */
-.node.kind-timer.invalid {
+.node.kind-timer.invalid,
+.node.kind-get.invalid,
+.node.kind-set.invalid {
   border-color: #e0554a;
 }
 
@@ -1085,10 +1208,6 @@ body.space-ready #viewport {
   grid-template-columns: 122px 168px 1fr;
   gap: 8px;
   align-items: center;
-}
-
-.set-board-row {
-  grid-template-columns: 122px 1fr auto;
 }
 
 .set-row input,
