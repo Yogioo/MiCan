@@ -436,12 +436,12 @@ body.space-ready #viewport {
   opacity: 0.55;
 }
 
-/* 出口：跟输入同一套行高，圆点落在右边框上。名字靠右，不占左边那一排输入框。 */
+/* 出口：圆点仍在右边框上；名字挂在节点外面，完整显示，不跟左边输入框抢宽度。 */
 .node-outputs {
   position: absolute;
   top: 26px;
-  right: 0;
-  width: 72px;
+  left: 100%;
+  width: max-content;
   pointer-events: none;
 }
 
@@ -449,20 +449,21 @@ body.space-ready #viewport {
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
   height: 26px;
-  padding: 0 16px 0 0;
+  padding: 0 0 0 10px;
   pointer-events: auto;
 }
 
 .node-output-row .node-port-name {
-  text-align: right;
+  max-width: none;
+  overflow: visible;
+  text-overflow: unset;
 }
 
 .node-output-row .node-port.port-out {
   top: 50%;
-  right: -6px;
-  left: auto;
+  right: auto;
+  left: -6px;
   opacity: 0.55;
 }
 

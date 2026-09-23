@@ -606,6 +606,8 @@ function applyRunEvent(runId, event) {
     return
   }
   if (event.t === 'end') {
+    const run = state.runs.get(runId)
+    for (const id of run?.nodes ?? []) state.running.delete(id)
     state.runs.delete(runId)
     stopTicking()
     // 只有自己发起的才报结束语：定时器一秒一条，报了就是在工具条上刷屏

@@ -237,6 +237,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       }
     }
     const texts = []
+    const portErrors = []
     if (!result.failed) {
       const pending = []
       for (const edge of outEdges) {
@@ -245,9 +246,18 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
         let text = result.output ?? ''
         if (edge.fromPort) {
           const spec = outputs[edge.fromPort]
-          if (!spec) return { error: `没有「${edge.fromPort}」这个出口` }
+          if (!spec) {
+            portErrors.push(`没有「${edge.fromPort}」这个出口`)
+            continue
+          }
           const picked = pickValue(text, spec, { multiline: true })
-          if (picked.error) return { error: `出口「${edge.fromPort}」取不到：${picked.error}` }
+          // 这份输出里没有这个字段：这条边先空着，不把整步判失败。
+          // 成功的 pi 没有 reason，失败的没有 text，出口都可能连着。
+          if (picked.missing) continue
+          if (picked.error) {
+            portErrors.push(`出口「${edge.fromPort}」取不到：${picked.error}`)
+            continue
+          }
           text = picked.value
         }
         pending.push({ item, text })
@@ -265,6 +275,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       texts: Object.fromEntries(texts.map((item) => [item.nodeId, item.text])),
     })
     emit(run, { t: 'done', nodeId: node.id, result, texts })
+    if (portErrors.length) return { result, error: portErrors.join('；') }
     return { result }
   }
 

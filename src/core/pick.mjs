@@ -45,7 +45,9 @@ function pickJson(source, path, multiline) {
   }
   let cursor = data
   for (const key of path.split('.')) {
-    if (!cursor || typeof cursor !== 'object' || !(key in cursor)) return { error: `没有「${path}」这个字段` }
+    if (!cursor || typeof cursor !== 'object' || !(key in cursor)) {
+      return { error: `没有「${path}」这个字段`, missing: true }
+    }
     cursor = cursor[key]
   }
   if (cursor === null) return { error: `「${path}」是 null` }
