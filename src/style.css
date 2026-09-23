@@ -404,6 +404,71 @@ body.space-ready #viewport {
   opacity: 1;
 }
 
+/* 输入端口区：命令里 {{名字}} / [[名字]] 有几个，这里排几行。
+   行高与圆心位置跟 core/geometry.mjs 的 INPUT_ROW 对齐 —— 线要接到圆心上，
+   那边算连接线的端点用的就是同一套数。 */
+.node-inputs {
+  position: absolute;
+  top: 26px;
+  right: 0;
+  left: 0;
+}
+
+.node-port-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 var(--pad-x) 0 16px;
+  border-bottom: 1px solid #f6f6f2;
+}
+
+/* 命名输入端口的圆点落在节点左边框上。输入端口是常驻可见的（它就是这一行的意思），
+   鼠标上来或选中时再亮一点 */
+.node-port-row .node-port.port-in {
+  top: 50%;
+  right: auto;
+  left: -6px;
+  opacity: 0.55;
+}
+
+.node:hover .node-port-row .node-port.port-in,
+.node.selected .node-port-row .node-port.port-in {
+  opacity: 1;
+}
+
+.node-port-name {
+  flex: none;
+  max-width: 42%;
+  overflow: hidden;
+  color: #7a7a72;
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.node-port-value {
+  flex: 1;
+  min-width: 0;
+  height: 19px;
+  padding: 0 6px;
+  border: 1px solid #e4e4de;
+  border-radius: 4px;
+  background: #fcfcfa;
+  color: #4a4a45;
+  font: inherit;
+  font-size: 11px;
+  user-select: text;
+}
+
+/* 这一路已经接了边：框让位，值由连线给 */
+.node-port-value:disabled {
+  border-color: transparent;
+  background: #f4f4f0;
+  color: #a8a8a0;
+}
+
 /* 节点 */
 
 .node {

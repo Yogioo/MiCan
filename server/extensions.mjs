@@ -8,21 +8,39 @@ export const MANIFEST = 'EXTENSION.md'
 // 扩展住在工作文件夹的 nodes 底下；节点上存的是相对工作文件夹的路径。
 export const EXT_DIR = 'nodes'
 
-// yaml 头：文件开头用 --- 包起来的那几行。只认平铺的 key: value，四个字段，不做嵌套、不做引号。
-// 认不出来就当这个扩展没认出来（报一句），不猜。
+// yaml 头：文件开头用 --- 包起来的那几行。认平铺的 `key: value`，外加一层缩进
+// （`defaults:` 底下那几个默认值）。不做引号、不做更深的嵌套 —— 四个字段够用了，
+// 认不出来的就当这个扩展没认出来（报一句），不猜。
 function parseManifest(text) {
   const head = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1]
   if (head === undefined) return { error: '开头没有 --- 包起来的 yaml 头' }
   const fields = {}
+  const defaults = {}
+  let inDefaults = false
   for (const line of head.split(/\r?\n/)) {
+    if (!line.trim()) continue
     const at = line.indexOf(':')
     if (at < 0) continue
     const key = line.slice(0, at).trim()
-    if (key) fields[key] = line.slice(at + 1).trim()
+    const value = line.slice(at + 1).trim()
+    if (!key) continue
+    // 缩进的行挂在上一行那个顶格字段底下 —— 现在只有 defaults 用得上
+    if (/^\s/.test(line)) {
+      if (inDefaults) defaults[key] = value
+      continue
+    }
+    inDefaults = key === 'defaults' && !value
+    if (!inDefaults) fields[key] = value
   }
   if (!fields.name) return { error: 'yaml 头里没有 name' }
   if (!fields.entry) return { error: 'yaml 头里没有 entry' }
-  return { name: fields.name, description: fields.description ?? '', entry: fields.entry, args: fields.args ?? '' }
+  return {
+    name: fields.name,
+    description: fields.description ?? '',
+    entry: fields.entry,
+    args: fields.args ?? '',
+    defaults,
+  }
 }
 
 async function readManifest(dir) {
@@ -44,7 +62,14 @@ export async function scanExtensions(root) {
         problems.push(`${rel}：${meta.error}`)
         return null
       }
-      return { label: meta.name, path: rel, description: meta.description, entry: meta.entry, args: meta.args }
+      return {
+        label: meta.name,
+        path: rel,
+        description: meta.description,
+        entry: meta.entry,
+        args: meta.args,
+        defaults: meta.defaults,
+      }
     }
     const children = []
     const dirs = entries.filter((item) => item.isDirectory()).sort((a, b) => a.name.localeCompare(b.name, 'zh'))

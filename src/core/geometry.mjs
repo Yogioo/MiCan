@@ -5,8 +5,8 @@ const MIN_REACH = 40 // 控制柄最短长度：节点贴在一起时曲线也�
 
 // 两个节点之间的连线：从来路的端口出发，按左右相对位置决定从哪一侧进。
 // 「回程边」多兜一个弯，否则两条反向边可能画到一起，点也点不中、标签也写错边。
-export function edgeGeometry(from, to, fromKind = 'data') {
-  const { start, c1, c2, end } = edgeCurve(from, to, fromKind)
+export function edgeGeometry(from, to, fromKind = 'data', toIndex = -1) {
+  const { start, c1, c2, end } = edgeCurve(from, to, fromKind, toIndex)
   const mid = {
     x: (start.x + 3 * c1.x + 3 * c2.x + end.x) / 8,
     y: (start.y + 3 * c1.y + 3 * c2.y + end.y) / 8,
@@ -16,13 +16,15 @@ export function edgeGeometry(from, to, fromKind = 'data') {
 
 // 一条边的三次曲线：起点、两个控制柄、终点。画线用这四个点，框选命中用同一条 ——
 // 两边算的是同一根线，不能各算各的。
-export function edgeCurve(from, to, fromKind = 'data') {
+export function edgeCurve(from, to, fromKind = 'data', toIndex = -1) {
   const fromCx = from.x + from.w / 2
   const toCx = to.x + to.w / 2
   // 中心 x 相同时用 id 定序，保证 A→B 与 B→A 不会画出同一条线
   const forward = toCx === fromCx ? to.id > from.id : toCx > fromCx
   const start = portPoint(from, fromKind)
-  const end = { x: forward ? to.x : to.x + to.w, y: to.y + to.h / 2 }
+  // 数据边对上了目标节点的某个命名输入端口，就接到那个端口上；对不上照旧接左侧中点。
+  // 接在哪儿由调用方算好（src/core/inputs.mjs 的 targetPortIndex），这里只管画。
+  const end = toIndex >= 0 ? inputPortPoint(to, toIndex) : { x: forward ? to.x : to.x + to.w, y: to.y + to.h / 2 }
   const reach = Math.max(MIN_REACH, Math.abs(end.x - start.x) / 2)
   const bow = forward ? 0 : machine.edgeBow
   const c1 = { x: start.x + (forward ? reach : -reach), y: start.y + bow }
@@ -30,10 +32,12 @@ export function edgeCurve(from, to, fromKind = 'data') {
   return { start, c1, c2, end }
 }
 
-// 建边过程中从连接点到光标的预览线。
-export function previewPath(start, cursor) {
+// 建边过程中从连接点到光标的预览线。flip 是往左拖（从输入端口往别处拉）时用：
+// 控制柄得翻个方向，不然线会先向右扑一下再拐回来。
+export function previewPath(start, cursor, flip = false) {
   const reach = Math.max(MIN_REACH, Math.abs(cursor.x - start.x) / 2)
-  return curve(start, { x: start.x + reach, y: start.y }, { x: cursor.x - reach, y: cursor.y }, cursor)
+  const dir = flip ? -1 : 1
+  return curve(start, { x: start.x + dir * reach, y: start.y }, { x: cursor.x - dir * reach, y: cursor.y }, cursor)
 }
 
 // 节点右侧的连接点：建边都从这里出发。会跑的节点两个（执行在上、数据在下），
@@ -46,6 +50,15 @@ export function portPoint(node, kind = 'data') {
   const ratio = single ? 0.5 : PORT_RATIO[kind] ?? 0.5
   return { x: node.x + node.w, y: node.y + node.h * ratio }
 }
+
+// 命名输入端口的排布：一行一个，从命令条下面开始往下排。
+// 这套数跟样式表里的 `.node-inputs` / `.node-port-row` 是一回事（那边的注释也指着这里）——
+// 端口的圆心必须落在连接线真正接上去的那个点上。
+//   命令条高 26，第一行占 26～52，圆心 39；一行 26 高。
+export const CMD_BAR_H = 26
+export const NODE_FOOT_H = 24
+export const INPUT_ROW = { top: CMD_BAR_H + 13, step: 26 }
+export const inputPortPoint = (node, index) => ({ x: node.x, y: node.y + INPUT_ROW.top + index * INPUT_ROW.step })
 
 // 框选：世界坐标里的框与节点矩形只要有重叠就选中（只挨着边、一点都不压上，不算）。
 // box 与 node 都是 { x, y, w, h } —— 节点本来就是这个形状，所以直接拿它当矩形用。

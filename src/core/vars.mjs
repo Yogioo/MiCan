@@ -1,11 +1,9 @@
-// 变量注入：指到命令节点上的数据边，标签是变量名，来路的节点是变量值的出处。
+// 变量注入：指到命令节点上的数据边，标签是变量名，来路的节点是变量值的出处；
+// 节点自己也可以填常量（端口左边的那些框），填了就不必接边。
 // 命令节点里写 pi --skill {{技能A}}，跑之前被替换掉；替换只发生在运行时，不写回命令。
 import { dataInto, findNode } from './graph.mjs'
 import { cacheFile } from './paths.mjs'
-
-// 两种取法，一个名字：{{名字}} 取内容的正文，[[名字]] 取它那份文件的本机绝对路径。
-// 都只认一层、不嵌套。命令最终交给 cmd.exe / sh，两种括号都不是 shell 语法，不会打架。
-const TOKEN = /\{\{([^{}]*)\}\}|\[\[([^[\]]*)\]\]/g
+import { TOKEN } from './tokens.mjs'
 
 // 节点上的路径是相对工作文件夹的 posix 路径，拼成这台机器上的绝对路径。
 // 运行目录可能不在工作文件夹里，所以路径必须绝对才有得跑。
@@ -32,6 +30,13 @@ function valueOf(workspace, source) {
 export function collectVars(graph, id, workspace) {
   const vars = new Map()
   const errors = []
+  // 节点上填的常量先放进来：同一个名字既有常量又接了边时，边说了算（界面上那个框也会让位）。
+  // 常量一个字符串两处用 —— `{{名字}}` 拿它当正文，`[[名字]]` 拿它当路径，各取各的。
+  for (const [name, value] of Object.entries(findNode(graph, id)?.consts ?? {})) {
+    const text = String(value ?? '').trim()
+    if (text) vars.set(name, { text, file: text })
+  }
+  const fromEdges = new Set()
   for (const edge of dataInto(graph, id)) {
     if (!edge.label) {
       errors.push('有一条入边没有标签，没名字就当不了变量')
@@ -39,10 +44,11 @@ export function collectVars(graph, id, workspace) {
     }
     const source = findNode(graph, edge.from)
     if (!source) continue
-    if (vars.has(edge.label)) {
+    if (fromEdges.has(edge.label)) {
       errors.push(`变量名「${edge.label}」有两条入边`)
       continue
     }
+    fromEdges.add(edge.label)
     const value = valueOf(workspace, source)
     if (!value) {
       errors.push(`「${edge.label}」的来路是命令节点，它还没跑过`)
@@ -59,7 +65,7 @@ export function applyVars(command, vars) {
   const pick = (raw, name, field) => {
     const entry = vars.get(name)
     if (!entry) {
-      problems.push(`${raw} 没有对应的入边`)
+      problems.push(`${raw} 既没有入边也没有填值`)
       return raw
     }
     const value = entry[field]

@@ -4,6 +4,7 @@ import {
   createNode,
   findEdge,
   findNode,
+  fitInputPorts,
   removeEdge,
   removeNode,
   runnable,
@@ -11,6 +12,7 @@ import {
   setNodeText,
 } from '../core/graph.mjs'
 import { curveHitsBox, edgeCurve, rectsOverlap } from '../core/geometry.mjs'
+import { inputsOf, findExtension, targetPortIndex } from '../core/inputs.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
 import { applyCanvas, applyMachine, canvas, machine } from '../core/settings.mjs'
 import { parseSchedule } from '../core/schedule.mjs'
@@ -208,9 +210,23 @@ async function loadExtensions() {
     return
   }
   notify()
+  fitAllInputPorts()
   if (state.extensions.problems?.length) {
     showMessage(`${state.extensions.problems.length} 个扩展没认出来：${state.extensions.problems[0]}`)
   }
+}
+
+// 输入端口是命令（扩展节点则是清单的 args）带出来的，节点高度却是用户拉的 ——
+// 改过命令的旧存档可能太矮，端口会被挤到框外。工作文件夹与扩展都到位之后兜一遍。
+// 不走 update()：这是载入时的就地掰正，不该进撤销栈。
+function fitAllInputPorts() {
+  let grown = false
+  for (const node of state.graph.nodes) {
+    if (fitInputPorts(state.graph, node.id, inputsOf(node, state.extensions).length)) grown = true
+  }
+  if (!grown) return
+  scheduleSave()
+  notify()
 }
 
 // 打开 / 另存为之后，画布与磁盘就是一致的，所以直接把状态按上去，不排落盘。
@@ -313,8 +329,18 @@ function createNodeAt(world, kind, extra = {}) {
     y: world.y - machine.nodeDefaultH / 2,
     ...extra,
   })
+  // 扩展里写的默认值：拖出来就先填上（填的是这一份，扩展不动 —— 想改全部就去改 EXTENSION.md）。
+  // 只填真是输入的：清单里写了别的名字也不往存档里塞垃圾。
+  const item = node.extension ? findExtension(state.extensions?.items, node.extension) : null
+  const ports = inputsOf(node, state.extensions)
+  for (const port of ports) {
+    const value = item?.defaults?.[port.name]
+    if (value) node.consts[port.name] = value
+  }
   update((draft) => {
     draft.graph.nodes.push(node)
+    // 端口几个落地前就知道了，高度当场兜够
+    if (node.extension) fitInputPorts(draft.graph, node.id, ports.length)
     draft.selection = new Set([node.id])
   })
 }
@@ -674,7 +700,9 @@ mountCanvas({
       for (const edge of draft.graph.edges) {
         const from = findNode(draft.graph, edge.from)
         const to = findNode(draft.graph, edge.to)
-        if (from && to && curveHitsBox(edgeCurve(from, to, edge.kind), box)) ids.push(edge.id)
+        // 框选一条边：命中用的曲线必须跟画出来的是同一根，所以这里也算一遍它接在哪个端口上
+        const portIndex = targetPortIndex(draft.graph, edge, state.extensions)
+        if (from && to && curveHitsBox(edgeCurve(from, to, edge.kind, portIndex), box)) ids.push(edge.id)
       }
       draft.selection = new Set(ids)
     }),

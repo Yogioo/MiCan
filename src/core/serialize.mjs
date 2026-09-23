@@ -21,7 +21,12 @@ export function serialize(state) {
       w: node.w,
       h: node.h,
       ...(node.kind === 'command'
-        ? { command: node.command, ...(node.cwd ? { cwd: node.cwd } : {}), ...(node.extension ? { extension: node.extension } : {}) }
+        ? {
+            command: node.command,
+            ...(node.cwd ? { cwd: node.cwd } : {}),
+            ...(node.extension ? { extension: node.extension } : {}),
+            ...constsPatch(node),
+          }
         : node.kind === 'extract'
           ? { pick: node.pick ?? '' }
           : node.kind === 'timer'
@@ -70,6 +75,20 @@ export function resultMeta(node) {
     : { code, failed: Boolean(failed), timedOut: Boolean(timedOut), truncated: Boolean(truncated), at, elapsed, command }
 }
 
+// 端口上填的常量：非空的字符串才写进存档，一个都没有就不写这个键。
+const constsPatch = (node) => {
+  const out = constsIn(node.consts)
+  return Object.keys(out).length ? { consts: out } : {}
+}
+
+// 外来的存档（手改、旧版本、写坏了）：常量只认非空字符串，其余一律丢掉。
+function constsIn(raw) {
+  if (!raw || typeof raw !== 'object') return {}
+  const out = {}
+  for (const [key, value] of Object.entries(raw)) if (typeof value === 'string' && value) out[key] = value
+  return out
+}
+
 // 校验并还原：不认识的结构直接报错，能救的地方（尺寸过小、悬空的边）就地修掉。
 export function deserialize(data) {
   if (!data || typeof data !== 'object') throw new Error('不是有效的 JSON 对象')
@@ -91,6 +110,8 @@ export function deserialize(data) {
         y: node.y,
         ...size,
         command: typeof node.command === 'string' ? node.command : '',
+        // 端口上填的常量（见 graph.mjs 的 setNodeConst）
+        consts: constsIn(node.consts),
         cwd: typeof node.cwd === 'string' ? node.cwd : '',
         // 引用扩展的节点：存的是扩展目录（相对工作文件夹），命令在跑的时候现拼（ADR-0014）
         extension: typeof node.extension === 'string' ? node.extension : '',

@@ -1,6 +1,7 @@
 // 边层：把边画成 SVG 曲线，处理建边、选中、标签编辑。
 import { addEdge, connectProblem, findNode, labelProblem, setEdgeLabel } from '../core/graph.mjs'
-import { edgeGeometry, portPoint, previewPath } from '../core/geometry.mjs'
+import { edgeGeometry, inputPortPoint, portPoint, previewPath } from '../core/geometry.mjs'
+import { targetPortIndex } from '../core/inputs.mjs'
 import { toWorld } from '../core/view.mjs'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
@@ -25,7 +26,8 @@ export function mountEdges({ getState, update, onError }) {
         elements.set(edge.id, entry)
       }
 
-      const { d, mid } = edgeGeometry(from, to, edge.kind)
+      // 数据边对上了目标节点的哪个命名输入端口，就接到那个端口上（对不上接左侧中点）
+      const { d, mid } = edgeGeometry(from, to, edge.kind, targetPortIndex(state.graph, edge, state.extensions))
       entry.hit.setAttribute('d', d)
       entry.line.setAttribute('d', d)
       const selected = state.selection.has(edge.id)
@@ -139,7 +141,9 @@ export function mountEdges({ getState, update, onError }) {
   }
 
   // 从节点的某个连接点拖到另一个节点：松开即建边。kind 由出发的那个端口决定。
-  function startConnection(fromId, kind, event) {
+  // options 是命名输入端口专用的：into 表示「从输入端口往别处拉」，那根边是反过来走的，
+  // 标签（label）与端口序号（index）也跟着带过来。
+  function startConnection(fromId, kind, event, options = null) {
     if (connecting) return
     const from = findNode(getState().graph, fromId)
     if (!from) return
@@ -147,7 +151,16 @@ export function mountEdges({ getState, update, onError }) {
     const preview = document.createElementNS(SVG_NS, 'path')
     preview.setAttribute('class', `edge-preview ${kind}`)
     svg.append(preview)
-    connecting = { fromId, kind, preview, target: null, problem: null }
+    connecting = {
+      fromId,
+      kind,
+      preview,
+      target: null,
+      problem: null,
+      into: Boolean(options?.into),
+      label: options?.label ?? '',
+      index: options?.index ?? 0,
+    }
 
     window.addEventListener('pointermove', onMove)
     window.addEventListener('pointerup', onUp)
@@ -168,14 +181,18 @@ export function mountEdges({ getState, update, onError }) {
     const from = findNode(state.graph, connecting.fromId)
     if (!from) return stopConnection()
     const cursor = toWorld(state.view, event.clientX, event.clientY)
-    connecting.preview.setAttribute('d', previewPath(portPoint(from, connecting.kind), cursor))
+    // 从出端口拉出去就从右边的端口起头；从输入端口往别处拉就从那个端口起头（方向反过来）
+    const origin = connecting.into ? inputPortPoint(from, connecting.index) : portPoint(from, connecting.kind)
+    connecting.preview.setAttribute('d', previewPath(origin, cursor, connecting.into))
 
     const target = dropTargetAt(event)
     if (target !== connecting.target) {
       connecting.target?.classList.remove('drop-target', 'drop-invalid')
       connecting.problem = null
       if (target) {
-        connecting.problem = connectProblem(state.graph, connecting.fromId, target.dataset.id, connecting.kind)
+        // into 的那根边是「目标 → 这个节点」，能不能连得按这个方向问
+        const pair = connecting.into ? [target.dataset.id, connecting.fromId] : [connecting.fromId, target.dataset.id]
+        connecting.problem = connectProblem(state.graph, pair[0], pair[1], connecting.kind)
         target.classList.add(connecting.problem ? 'drop-invalid' : 'drop-target')
       }
       connecting.target = target
@@ -184,16 +201,25 @@ export function mountEdges({ getState, update, onError }) {
 
   function onUp(event) {
     const target = dropTargetAt(event)
-    const { fromId, kind } = connecting
+    const { fromId, kind, into, label } = connecting
     stopConnection()
     if (!target) return
     const toId = target.dataset.id
+    // into：这条边是从别处进这个节点的，方向和标签要反过来算
+    const from = into ? toId : fromId
+    const to = into ? fromId : toId
+    // 拖到哪个命名端口上，就把那个端口名填成边的标签 —— 不必再手打一遍变量名
+    const landed = document.elementFromPoint(event.clientX, event.clientY)?.closest?.('.node-port-row')?.dataset.name ?? ''
+    const wanted = into ? label : landed
     let created = null
     update((state) => {
-      created = addEdge(state.graph, fromId, toId, kind)
+      created = addEdge(state.graph, from, to, kind)
+      if (created && wanted && !labelProblem(state.graph, created.id, wanted)) {
+        setEdgeLabel(state.graph, created.id, wanted)
+      }
       if (created) state.selection = new Set([created.id])
     })
-    if (!created) onError(connectProblem(getState().graph, fromId, toId, kind) ?? '这条边连不上')
+    if (!created) onError(connectProblem(getState().graph, from, to, kind) ?? '这条边连不上')
   }
 
   function onKey(event) {

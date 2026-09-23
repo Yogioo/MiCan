@@ -1,6 +1,8 @@
 // 图：节点与边的纯数据操作，不碰 DOM。
+import { INPUT_ROW, NODE_FOOT_H } from './geometry.mjs'
 import { DEFAULT_SCHEDULE } from './schedule.mjs'
 import { machine } from './settings.mjs'
+import { parseTokens } from './tokens.mjs'
 
 let seq = 0
 
@@ -15,7 +17,7 @@ export function createGraph() {
 
 export function createNode({ kind = 'text', x = 0, y = 0, w = machine.nodeDefaultW, h = machine.nodeDefaultH, text = '', command = '', cwd = '', extension = '', file = '', pick = '', schedule = '' } = {}) {
   const id = newId('n')
-  if (kind === 'command') return { id, kind, x, y, w, h, command, cwd, extension }
+  if (kind === 'command') return { id, kind, x, y, w, h, command, cwd, extension, consts: {} }
   if (kind === 'extract') return { id, kind, x, y, w, h, pick }
   if (kind === 'entry') return { id, kind, x, y, w, h }
   if (kind === 'timer') return { id, kind, x, y, w, h, schedule: schedule || DEFAULT_SCHEDULE }
@@ -51,6 +53,31 @@ export function setNodeCommand(graph, id, command) {
   const node = findNode(graph, id)
   if (!node) return
   node.command = command
+  fitInputPorts(graph, id, parseTokens(command).length)
+}
+
+// 端口上填的常量。空串就当没有——免得存档里留一堆空键；名字对不上任何 token 也不清，
+// 用户可能正要把那个 token 写回去。
+// 一个常量两处用：`{{名字}}` 拿它当正文，`[[名字]]` 拿它当路径。
+export function setNodeConst(graph, id, name, value) {
+  const node = findNode(graph, id)
+  if (!node) return
+  const text = String(value ?? '')
+  node.consts ??= {}
+  if (text) node.consts[name] = text
+  else delete node.consts[name]
+}
+
+// 输入端口太矮就被挤没了：端口多了把节点高度兜到够。
+// 只往上兜、不缩回去——缩回去会把用户自己拉过的尺寸改掉。长高了返回 true（调用方决定要不要落盘）。
+export function fitInputPorts(graph, id, count) {
+  const node = findNode(graph, id)
+  if (!node || node.kind !== 'command' || !count) return false
+  const lastCenter = INPUT_ROW.top + (count - 1) * INPUT_ROW.step
+  const room = lastCenter + INPUT_ROW.step / 2 + NODE_FOOT_H
+  if (node.h >= room) return false
+  node.h = room
+  return true
 }
 
 // 取法：`json:isFull` 这样一段文本。解析是 pick.mjs 的事，这里只存。

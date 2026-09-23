@@ -1,5 +1,7 @@
 // 节点层：渲染三类节点，处理拖动、缩放、选中、编辑、右键菜单。
-import { extensionOf, moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeCwd, setNodeFile, setNodePick, setNodeSchedule, setNodeText } from '../core/graph.mjs'
+import { extensionOf, moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeConst, setNodeCwd, setNodeFile, setNodePick, setNodeSchedule, setNodeText } from '../core/graph.mjs'
+import { CMD_BAR_H, INPUT_ROW } from '../core/geometry.mjs'
+import { findExtension, inputsOf, wiredNames } from '../core/inputs.mjs'
 import { describeSchedule, dailyText, intervalText, nextFireAt, parseSchedule, scheduleFields } from '../core/schedule.mjs'
 import { canvas, machine } from '../core/settings.mjs'
 import { toWorld } from '../core/view.mjs'
@@ -7,16 +9,6 @@ import { renderMarkdown } from './markdown.mjs'
 
 // 本机绝对路径：盘符（C:\、C:/）、UNC（\\server）、或 / 开头；其余当相对工作文件夹
 const isAbsolutePath = (value) => /^(?:[a-zA-Z]:[\\/]|[\\/])/.test(value)
-
-// 从菜单那份树里按路径找扩展的名字；找不到就返回空串（调用方当坏引用处理）。
-function nameOfExtension(items, path) {
-  for (const item of items ?? []) {
-    if (item.entry && item.path === path) return item.label
-    const found = nameOfExtension(item.children, path)
-    if (found) return found
-  }
-  return ''
-}
 
 const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
 // 脚上的时刻：默认只到分；秒级定时器要看到秒，不然一秒响一次也像什么都没发生
@@ -78,7 +70,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     // 引用扩展的节点：命令不归用户写，条上显示扩展的名字（ADR-0014）。名字从菜单那份树里现查；
     // 查不到就是坏引用 —— 标红、提示路径，但连线一个不动。
     const ext = extensionOf(node)
-    const extName = ext ? nameOfExtension(state.extensions?.items, ext) : ''
+    const extName = ext ? findExtension(state.extensions?.items, ext)?.label ?? '' : ''
+    // 输入端口区先摆好 —— 正文得按它的高度往下让
+    renderInputs(el, node, state)
     const bar = ext ? extName || `找不到扩展：${ext}` : node.command
     const cmd = el.querySelector('.node-cmd')
     if (cmd.textContent !== bar) cmd.textContent = bar
@@ -122,6 +116,69 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     }
     if (at) foot.push(`@ ${at}`)
     el.querySelector('.node-foot').textContent = foot.join(' · ')
+  }
+
+  // 命令节点的输入端口：命令里（扩展节点则是清单的 args 里）有几个 {{名字}} / [[名字]]，
+  // 左边就排几行，每行 [端口][名字][填值的框]。同一个变量有两条路：从端口拉线连别的节点，
+  // 或者直接在框里填常量 —— 连了边的那一行框就让位（边是更明确的来源）。
+  function renderInputs(el, node, state) {
+    const box = el.querySelector('.node-inputs')
+    if (!box) return
+    const inputs = inputsOf(node, state.extensions)
+    const wired = wiredNames(state.graph, node.id)
+    // 清单里给这个输入写的默认值：只在框空着的时候当提示，不自己填回去
+    const declared = node.extension ? findExtension(state.extensions?.items, node.extension) : null
+    // 端口只在名单变了的时候重建 —— 每次重绘都重建的话，正在填的那个框会被抽走
+    const signature = inputs.map((port) => `${port.name}${port.file ? '(f)' : ''}`).join('|')
+    if (el._ports !== signature) {
+      box.textContent = ''
+      for (const [index, item] of inputs.entries()) box.append(portRow(el, item, index))
+      el._ports = signature
+    }
+    for (const row of box.children) {
+      const field = row.querySelector('.node-port-value')
+      const fromEdge = wired.has(row.dataset.name)
+      const fallback = declared?.defaults?.[row.dataset.name] ?? ''
+      field.disabled = fromEdge
+      field.placeholder = fromEdge ? '由连线提供' : fallback ? `默认 ${fallback}` : '填值'
+      const wanted = fromEdge ? '' : node.consts?.[row.dataset.name] ?? ''
+      if (document.activeElement !== field && field.value !== wanted) field.value = wanted
+    }
+    // 端口区把正文往下挤；没有输入就还回去，别留一条白缝
+    el.querySelector('.node-body').style.top = inputs.length ? `${CMD_BAR_H + inputs.length * INPUT_ROW.step}px` : ''
+  }
+
+  // 一行输入端口：圆点（拉线、接线的抓手）、名字、填值的框
+  function portRow(el, item, index) {
+    const row = document.createElement('div')
+    row.className = 'node-port-row'
+    row.dataset.name = item.name
+
+    const port = document.createElement('div')
+    port.className = 'node-port port-data port-in'
+    port.dataset.kind = 'data'
+    port.dataset.name = item.name
+    port.dataset.index = String(index)
+    port.title = `输入「${item.name}」：从这里拉到别的节点上，或者从别处连过来`
+
+    const name = document.createElement('span')
+    name.className = 'node-port-name'
+    name.textContent = item.name
+    if (item.file) name.title = '这一路要的是文件路径（[[名字]]），不是正文'
+
+    const value = document.createElement('input')
+    value.className = 'node-port-value'
+    value.spellcheck = false
+    value.placeholder = '填值'
+    // 在框里打字别触发全局快捷键（Delete 删节点那一套）
+    value.addEventListener('keydown', (event) => event.stopPropagation())
+    value.addEventListener('change', () => {
+      const current = getState().graph.nodes.find((entry) => entry.id === el.dataset.id)
+      if (current) update((draft) => setNodeConst(draft.graph, current.id, item.name, value.value))
+    })
+
+    row.append(port, name, value)
+    return row
   }
 
   function describeResult(result) {
@@ -250,7 +307,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
           ? `<div class="node-title"><span class="node-kind">入口</span></div><div class="node-body"></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
           : node.kind === 'timer'
             ? `<div class="node-cmd"></div><div class="node-body"><div class="timer-form">${TIMER_FORM}</div></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
-            : `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
+            : node.kind === 'command'
+              ? `<div class="node-cmd"></div><div class="node-inputs"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
+              : `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
 
     if (node.kind === 'timer') {
       const form = el.querySelector('.timer-form')
@@ -485,11 +544,19 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     const node = getState().graph.nodes.find((item) => item.id === id)
     if (!node) return
 
-    // 连接点：交给边层去拉一条线，拉哪一种由端口决定
+    // 连接点：交给边层去拉一条线，拉哪一种由端口决定。
+    // 命名输入端口还要把名字带过去 —— 建出来的边标签就是它，而且从端口往别处拉时方向是反的。
     const port = event.target.closest('.node-port')
     if (port) {
       event.stopPropagation()
-      onConnectStart(id, port.dataset.kind ?? 'data', event)
+      const name = port.dataset.name ?? ''
+      const into = name ? { into: true, label: name, index: Number(port.dataset.index ?? 0) } : null
+      onConnectStart(id, port.dataset.kind ?? 'data', event, into)
+      return
+    }
+    // 输入端口的填值框：归它自己，别当成拖节点
+    if (event.target.closest('.node-port-row')) {
+      event.stopPropagation()
       return
     }
 
