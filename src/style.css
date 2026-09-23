@@ -378,9 +378,10 @@ body.space-ready #viewport {
   cursor: crosshair;
 }
 
-/* 两个端口的位置跟 geometry 里的 PORT_RATIO 对齐 */
+/* 两个端口的位置跟 geometry 里的 portPoint 对齐：执行端口在标题条的中线（13px）上，
+   数据端口按比例落在右侧。 */
 .node-port.port-exec {
-  top: 32%;
+  top: 13px;
   border: 1.5px solid #4a4a46;
 }
 
@@ -393,10 +394,12 @@ body.space-ready #viewport {
   top: 50%;
 }
 
-/* 入口和定时器只有执行端口，居中一个 */
-.node.kind-entry .node-port.port-exec,
-.node.kind-timer .node-port.port-exec {
-  top: 50%;
+/* 标题条左端的「入」圆点：执行边就是从这儿进来的。它只是个标记，不拉线
+   （连线还是从上游节点的出端口拉过来），所以不吃指针。 */
+.node-port.port-exec-in {
+  right: auto;
+  left: -6px;
+  pointer-events: none;
 }
 
 .node:hover .node-port,

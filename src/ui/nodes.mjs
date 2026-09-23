@@ -277,11 +277,16 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     else update((state) => setNodeSchedule(state.graph, node.id, text))
   }
 
-  // 连接点：会跑的节点两个（执行在上、数据在下），文本节点一个；
-  // 入口和定时器只有执行出边，所以只有一个居中的执行端口。
+  // 连接点：都会落在节点顶部标题条那一条水平线上 —— 执行边从右端出去、从左端进来，
+  // 链看起来是一条贯的线。会跑的节点还有一个数据端口（按比例落在右侧）；
+  // 入口和定时器只有执行出边。
   const EXEC_PORT = '<div class="node-port port-exec" data-kind="exec" title="执行端口：连下一个会跑的节点"></div>'
+  // 左端的「入」圆点只看不拉：连线还是从上游节点的出端口拉过来。
+  const EXEC_IN = '<div class="node-port port-exec port-exec-in" title="执行入口：上一步从这儿进来"></div>'
   const RUN_PORTS =
-    EXEC_PORT + '<div class="node-port port-data" data-kind="data" title="数据端口：连文本节点或会跑的节点"></div>'
+    EXEC_PORT +
+    EXEC_IN +
+    '<div class="node-port port-data" data-kind="data" title="数据端口：连文本节点或会跑的节点"></div>'
   const TEXT_PORT = '<div class="node-port port-data" data-kind="data" title="数据端口：把正文喂给会跑的节点"></div>'
 
   // 定时器的控件：模式（固定间隔 / 每天）、间隔的数值与单位、每天的时刻。

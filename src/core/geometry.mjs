@@ -5,6 +5,7 @@ const MIN_REACH = 40 // 控制柄最短长度：节点贴在一起时曲线也�
 
 // 两个节点之间的连线：从来路的端口出发，按左右相对位置决定从哪一侧进。
 // 「回程边」多兜一个弯，否则两条反向边可能画到一起，点也点不中、标签也写错边。
+// 例外是执行边：入点固定在目标标题条左端的「入」圆点上，不跟着左右换边。
 export function edgeGeometry(from, to, fromKind = 'data', toIndex = -1) {
   const { start, c1, c2, end } = edgeCurve(from, to, fromKind, toIndex)
   const mid = {
@@ -22,9 +23,26 @@ export function edgeCurve(from, to, fromKind = 'data', toIndex = -1) {
   // 中心 x 相同时用 id 定序，保证 A→B 与 B→A 不会画出同一条线
   const forward = toCx === fromCx ? to.id > from.id : toCx > fromCx
   const start = portPoint(from, fromKind)
-  // 数据边对上了目标节点的某个命名输入端口，就接到那个端口上；对不上照旧接左侧中点。
-  // 接在哪儿由调用方算好（src/core/inputs.mjs 的 targetPortIndex），这里只管画。
-  const end = toIndex >= 0 ? inputPortPoint(to, toIndex) : { x: forward ? to.x : to.x + to.w, y: to.y + to.h / 2 }
+
+  // 执行边：入边永远落在目标节点标题条左端那个「入」圆点上，跟目标在左还是在右无关 ——
+  // 端点就是那个圆点，换成右侧就对不上了。出处照旧从上游出端口向右走，
+  // 目标在左边时多兜一个弯（bow），免得跟反向那根叠在一起。
+  if (fromKind === 'exec') {
+    const end = { x: to.x, y: to.y + TITLE_MID }
+    const reach = Math.max(MIN_REACH, Math.abs(end.x - start.x) / 2)
+    const bow = forward ? 0 : machine.edgeBow
+    return {
+      start,
+      c1: { x: start.x + reach, y: start.y + bow },
+      c2: { x: end.x - reach, y: end.y + bow },
+      end,
+    }
+  }
+
+  // 数据边：接上命名输入端口就接那个端口（接在哪儿由调用方算好，见 src/core/inputs.mjs 的
+  // targetPortIndex）；接不上就按左右相对位置进左侧或右侧的中点。
+  const end =
+    toIndex >= 0 ? inputPortPoint(to, toIndex) : { x: forward ? to.x : to.x + to.w, y: to.y + to.h / 2 }
   const reach = Math.max(MIN_REACH, Math.abs(end.x - start.x) / 2)
   const bow = forward ? 0 : machine.edgeBow
   const c1 = { x: start.x + (forward ? reach : -reach), y: start.y + bow }
@@ -40,14 +58,19 @@ export function previewPath(start, cursor, flip = false) {
   return curve(start, { x: start.x + dir * reach, y: start.y }, { x: cursor.x - dir * reach, y: cursor.y }, cursor)
 }
 
-// 节点右侧的连接点：建边都从这里出发。会跑的节点两个（执行在上、数据在下），
-// 文本节点一个；入口和定时器只有执行出边，所以也是居中一个。
+// 节点顶部那条 26px 高的条（命令节点的命令条、文本节点与入口的标题栏）——高度跟样式表里的一致。
+export const CMD_BAR_H = 26
+// 条的中线：执行边的两个端点都落在这条线上（出边从右端出去、入边落在左端）。
+const TITLE_MID = CMD_BAR_H / 2
+
+// 节点右侧的连接点：建边都从这里出发。执行端口在标题条上（跟入边同一条线），
+// 数据端口按比例落在右侧；文本节点只有一个，居中。
 // 从哪个点拉出去，就是哪一种边 —— 所以边层不需要再猜。
-const PORT_RATIO = { exec: 0.32, data: 0.68 }
+const DATA_RATIO = 0.68
 
 export function portPoint(node, kind = 'data') {
-  const single = node.kind === 'text' || node.kind === 'entry' || node.kind === 'timer'
-  const ratio = single ? 0.5 : PORT_RATIO[kind] ?? 0.5
+  if (kind === 'exec') return { x: node.x + node.w, y: node.y + TITLE_MID }
+  const ratio = node.kind === 'text' ? 0.5 : DATA_RATIO
   return { x: node.x + node.w, y: node.y + node.h * ratio }
 }
 
@@ -55,7 +78,6 @@ export function portPoint(node, kind = 'data') {
 // 这套数跟样式表里的 `.node-inputs` / `.node-port-row` 是一回事（那边的注释也指着这里）——
 // 端口的圆心必须落在连接线真正接上去的那个点上。
 //   命令条高 26，第一行占 26～52，圆心 39；一行 26 高。
-export const CMD_BAR_H = 26
 export const NODE_FOOT_H = 24
 export const INPUT_ROW = { top: CMD_BAR_H + 13, step: 26 }
 export const inputPortPoint = (node, index) => ({ x: node.x, y: node.y + INPUT_ROW.top + index * INPUT_ROW.step })
