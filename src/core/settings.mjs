@@ -52,6 +52,8 @@ export const shownFields = (fields) => fields.filter((field) => field.tier !== '
 
 export const machine = {}
 export const canvas = {}
+// 面板：跟这份画布走的名字→单行字符串。不进 CANVAS_FIELDS（那张表只收标量）。
+export const board = {}
 
 function coerce(field, raw) {
   if (field.kind === 'int' || field.kind === 'number') {
@@ -75,8 +77,14 @@ export function resetCanvas() {
   return canvas
 }
 
+export function resetBoard() {
+  for (const key of Object.keys(board)) delete board[key]
+  return board
+}
+
 resetMachine()
 resetCanvas()
+resetBoard()
 
 // 把外来的那份按表收进来：只认表里的项，逐项校验、超范围夹住，缺的补默认。
 export function applyMachine(data) {
@@ -93,6 +101,25 @@ export function applyCanvas(data) {
   return canvas
 }
 
+// 外来的存档：只认非空单行字符串；重名以后来的为准。
+export function boardIn(data) {
+  const out = {}
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return out
+  for (const [key, value] of Object.entries(data)) {
+    if (typeof value !== 'string') continue
+    const text = value.trim()
+    if (!key || !text || text.includes('\n')) continue
+    out[key] = text
+  }
+  return out
+}
+
+export function applyBoard(data) {
+  resetBoard()
+  Object.assign(board, boardIn(data))
+  return board
+}
+
 const snapshot = (fields, source) => Object.fromEntries(fields.map((field) => [field.key, source[field.key]]))
 
 // 发给后端的那一份（后端只认 shell / timeout / outputLimitKb / recentMax / openWorkspace，其余原样存着）
@@ -103,4 +130,9 @@ export function machinePatch() {
 // 写进存档的那一份
 export function canvasPatch() {
   return snapshot(CANVAS_FIELDS, canvas)
+}
+
+// 面板写进存档顶层；一格都没有就不带这个键。
+export function boardPatch() {
+  return Object.keys(board).length ? { ...board } : null
 }

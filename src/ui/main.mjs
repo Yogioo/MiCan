@@ -12,9 +12,10 @@ import {
   setNodeText,
 } from '../core/graph.mjs'
 import { curveHitsBox, edgeCurve, rectsOverlap } from '../core/geometry.mjs'
-import { inputsOf, targetPortIndex } from '../core/inputs.mjs'
+import { inputsOf, outputsOf, sourcePortIndex, targetPortIndex } from '../core/inputs.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
-import { applyCanvas, applyMachine, canvas, machine } from '../core/settings.mjs'
+import { applyPaste, snapshotSelection } from '../core/duplicate.mjs'
+import { applyBoard, applyCanvas, applyMachine, board, canvas, machine } from '../core/settings.mjs'
 import { parseSchedule } from '../core/schedule.mjs'
 import { createHistory, push, redo as redoHistory, undo as undoHistory } from '../core/history.mjs'
 import { createView, zoomAt } from '../core/view.mjs'
@@ -223,7 +224,8 @@ async function loadExtensions() {
 function fitAllInputPorts() {
   let grown = false
   for (const node of state.graph.nodes) {
-    if (fitInputPorts(state.graph, node.id, inputsOf(node, state.extensions).length)) grown = true
+    const count = Math.max(inputsOf(node, state.extensions).length, outputsOf(node, state.extensions).length)
+    if (fitInputPorts(state.graph, node.id, count)) grown = true
   }
   if (!grown) return
   scheduleSave()
@@ -278,6 +280,9 @@ async function loadWorkspace(path) {
       node.result.log = logs[node.id] ?? ''
     }
     applyCanvas(restored.settings) // 跟这份画布走的设置（步数上限这类）跟着存档换
+    applyBoard(restored.board) // 面板跟着存档换；没有这个键就是空表
+  } else {
+    applyBoard(null)
   }
   adoptWorkspace(response.root, restored ?? { graph: createGraph(), view: state.view })
   return restored
@@ -337,11 +342,11 @@ function createNodeAt(world, kind, extra = {}) {
   })
   // 清单里的默认值**不**填进节点：那个框留空，跑的时候由后端拿默认值兜底（ADR-0015）。
   // 框里只剩一句灰色的「默认 …」当提示 —— 拖出来是一张干净的节点。
-  const ports = inputsOf(node, state.extensions)
+  const ports = Math.max(inputsOf(node, state.extensions).length, outputsOf(node, state.extensions).length)
   update((draft) => {
     draft.graph.nodes.push(node)
     // 端口几个落地前就知道了，高度当场兜够
-    if (node.extension) fitInputPorts(draft.graph, node.id, ports.length)
+    if (node.extension) fitInputPorts(draft.graph, node.id, ports)
     draft.selection = new Set([node.id])
   })
 }
@@ -356,6 +361,34 @@ function deleteSelection() {
     }
     draft.selection = new Set()
   })
+}
+
+// 复制：只活在内存里。抄的是选中的节点，加两端都在这批里的边。
+let clipboard = null
+let pasteN = 0
+
+function copySelection() {
+  const clip = snapshotSelection(state.graph, state.selection)
+  if (!clip) return false
+  clipboard = clip
+  pasteN = 0
+  return true
+}
+
+function pasteSelection() {
+  if (!clipboard) return
+  pasteN += 1
+  const delta = machine.gridStep
+  update((draft) => {
+    const { nodes } = applyPaste(draft.graph, clipboard, delta * pasteN, delta * pasteN)
+    draft.selection = new Set(nodes.map((node) => node.id))
+  })
+}
+
+function duplicateSelection() {
+  if (!copySelection()) return false
+  pasteSelection()
+  return true
 }
 
 function clearSelection() {
@@ -596,13 +629,14 @@ function repaint() {
 async function openSettings() {
   try {
     const saved = await askSettings({
-      current: { machine, canvas },
+      current: { machine, canvas, board },
       hasWorkspace: Boolean(state.workspace),
       onImported: loadExtensions, // 拷进来的插件要马上出现在右键菜单里
     })
     if (!saved) return
     applyMachine(saved.machine) // 跟机器走的：后端刚存下来，以后每次跑命令它自己去读
     applyCanvas(saved.canvas) // 跟画布走的：收进内存，下面一次落盘就写进存档
+    applyBoard(saved.board) // 面板跟画布走，不进撤销栈（跟存档配置同一条路）
     scheduleSave()
     notify()
     showMessage('设置已保存')
@@ -686,6 +720,24 @@ window.addEventListener('keydown', (event) => {
     else undo()
     return
   }
+  if (mod && event.key.toLowerCase() === 'c') {
+    // 正文里选着字：这一下是抄那段字，别抢走
+    const picked = window.getSelection()
+    if (picked && !picked.isCollapsed) return
+    if (copySelection()) event.preventDefault()
+    return
+  }
+  if (mod && event.key.toLowerCase() === 'v') {
+    if (!clipboard) return
+    event.preventDefault()
+    pasteSelection()
+    return
+  }
+  if (mod && event.key.toLowerCase() === 'd') {
+    if (!duplicateSelection()) return
+    event.preventDefault()
+    return
+  }
   if (event.key === 'Delete' || event.key === 'Backspace') {
     // 正文里选着字的时候，这一下是冲那段字来的，不是冲节点 —— 别删掉用户正要抄的东西
     const picked = window.getSelection()
@@ -715,8 +767,9 @@ mountCanvas({
         const from = findNode(draft.graph, edge.from)
         const to = findNode(draft.graph, edge.to)
         // 框选一条边：命中用的曲线必须跟画出来的是同一根，所以这里也算一遍它接在哪个端口上
-        const portIndex = targetPortIndex(draft.graph, edge, state.extensions)
-        if (from && to && curveHitsBox(edgeCurve(from, to, edge.kind, portIndex), box)) ids.push(edge.id)
+        const toIndex = targetPortIndex(draft.graph, edge, state.extensions)
+        const fromIndex = sourcePortIndex(draft.graph, edge, state.extensions)
+        if (from && to && curveHitsBox(edgeCurve(from, to, edge.kind, toIndex, fromIndex), box)) ids.push(edge.id)
       }
       draft.selection = new Set(ids)
     }),

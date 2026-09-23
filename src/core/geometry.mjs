@@ -6,8 +6,8 @@ const MIN_REACH = 40 // 控制柄最短长度：节点贴在一起时曲线也�
 // 两个节点之间的连线：从来路的端口出发，按左右相对位置决定从哪一侧进。
 // 「回程边」多兜一个弯，否则两条反向边可能画到一起，点也点不中、标签也写错边。
 // 例外是执行边：入点固定在目标标题条左端的「入」圆点上，不跟着左右换边。
-export function edgeGeometry(from, to, fromKind = 'data', toIndex = -1) {
-  const { start, c1, c2, end } = edgeCurve(from, to, fromKind, toIndex)
+export function edgeGeometry(from, to, fromKind = 'data', toIndex = -1, fromIndex = -1) {
+  const { start, c1, c2, end } = edgeCurve(from, to, fromKind, toIndex, fromIndex)
   const mid = {
     x: (start.x + 3 * c1.x + 3 * c2.x + end.x) / 8,
     y: (start.y + 3 * c1.y + 3 * c2.y + end.y) / 8,
@@ -17,12 +17,12 @@ export function edgeGeometry(from, to, fromKind = 'data', toIndex = -1) {
 
 // 一条边的三次曲线：起点、两个控制柄、终点。画线用这四个点，框选命中用同一条 ——
 // 两边算的是同一根线，不能各算各的。
-export function edgeCurve(from, to, fromKind = 'data', toIndex = -1) {
+export function edgeCurve(from, to, fromKind = 'data', toIndex = -1, fromIndex = -1) {
   const fromCx = from.x + from.w / 2
   const toCx = to.x + to.w / 2
   // 中心 x 相同时用 id 定序，保证 A→B 与 B→A 不会画出同一条线
   const forward = toCx === fromCx ? to.id > from.id : toCx > fromCx
-  const start = portPoint(from, fromKind)
+  const start = fromIndex >= 0 ? outputPortPoint(from, fromIndex) : portPoint(from, fromKind)
 
   // 执行边：入边永远落在目标节点标题条左端那个「入」圆点上，跟目标在左还是在右无关 ——
   // 端点就是那个圆点，换成右侧就对不上了。出处照旧从上游出端口向右走，
@@ -81,6 +81,7 @@ export function portPoint(node, kind = 'data') {
 export const NODE_FOOT_H = 24
 export const INPUT_ROW = { top: CMD_BAR_H + 13, step: 26 }
 export const inputPortPoint = (node, index) => ({ x: node.x, y: node.y + INPUT_ROW.top + index * INPUT_ROW.step })
+export const outputPortPoint = (node, index) => ({ x: node.x + node.w, y: node.y + INPUT_ROW.top + index * INPUT_ROW.step })
 
 // 框选：世界坐标里的框与节点矩形只要有重叠就选中（只挨着边、一点都不压上，不算）。
 // box 与 node 都是 { x, y, w, h } —— 节点本来就是这个形状，所以直接拿它当矩形用。

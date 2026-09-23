@@ -23,6 +23,18 @@ const KEEP_SESSION = '--留会话'
 const IS_WINDOWS = process.platform === 'win32'
 const say = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
 
+// 回话若本身是一段 JSON 对象，把它自己的原始值键抄到顶层（不覆盖 ok）。
+function parseObject(text) {
+  const raw = String(text ?? '').trim()
+  if (!raw.startsWith('{')) return null
+  try {
+    const data = JSON.parse(raw)
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : null
+  } catch {
+    return null
+  }
+}
+
 // ---- 诊断那条路（stderr）----
 // 每一行前面都带一根时间栏：从起跑算到第几秒。这是「时间」最要紧的表达 ——
 // 没有它，「八步跑了十秒」和「一步卡了三分钟」在正文上长得一模一样。
@@ -309,7 +321,15 @@ try {
   } else if (!answer) {
     say({ ok: false, reason: 'pi 没有回话' })
   } else {
-    say({ ok: true, text: answer })
+    const payload = { ok: true, text: answer }
+    const inner = parseObject(answer)
+    if (inner) {
+      for (const [key, value] of Object.entries(inner)) {
+        if (key === 'ok') continue
+        if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') payload[key] = value
+      }
+    }
+    say(payload)
   }
 } catch (error) {
   line(`✗ ${error.message}`) // 没跑成的原因也要落在节点正文上，别只在值里

@@ -17,14 +17,16 @@ export const EXT_DIR = 'extensions'
 export const LIBRARY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'builtin')
 
 // yaml 头：文件开头用 --- 包起来的那几行。认平铺的 `key: value`，外加一层缩进
-// （`defaults:` 底下那几个默认值）。不做引号、不做更深的嵌套 —— 四个字段够用了，
+// （`defaults:` / `outputs:` 底下那几行）。不做引号、不做更深的嵌套。
 // 认不出来的就当这个扩展没认出来（报一句），不猜。
+const NESTED = new Set(['defaults', 'outputs'])
+
 function parseManifest(text) {
   const head = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1]
   if (head === undefined) return { error: '开头没有 --- 包起来的 yaml 头' }
   const fields = {}
-  const defaults = {}
-  let inDefaults = false
+  const nested = { defaults: {}, outputs: {} }
+  let nest = ''
   for (const line of head.split(/\r?\n/)) {
     if (!line.trim()) continue
     const at = line.indexOf(':')
@@ -32,13 +34,13 @@ function parseManifest(text) {
     const key = line.slice(0, at).trim()
     const value = line.slice(at + 1).trim()
     if (!key) continue
-    // 缩进的行挂在上一行那个顶格字段底下 —— 现在只有 defaults 用得上
+    // 缩进的行挂在上一行那个顶格字段底下
     if (/^\s/.test(line)) {
-      if (inDefaults) defaults[key] = value
+      if (nest) nested[nest][key] = value
       continue
     }
-    inDefaults = key === 'defaults' && !value
-    if (!inDefaults) fields[key] = value
+    nest = NESTED.has(key) && !value ? key : ''
+    if (!nest) fields[key] = value
   }
   if (!fields.name) return { error: 'yaml 头里没有 name' }
   if (!fields.entry) return { error: 'yaml 头里没有 entry' }
@@ -47,7 +49,9 @@ function parseManifest(text) {
     description: fields.description ?? '',
     entry: fields.entry,
     args: fields.args ?? '',
-    defaults,
+    defaults: nested.defaults,
+    outputs: nested.outputs,
+    route: fields.route ?? '',
   }
 }
 
@@ -77,6 +81,8 @@ export async function scanExtensions(root) {
         entry: meta.entry,
         args: meta.args,
         defaults: meta.defaults,
+        outputs: meta.outputs,
+        route: meta.route,
       }
     }
     const children = []
@@ -108,8 +114,14 @@ export async function commandOf(root, rel) {
   const entry = path.resolve(dir, meta.entry)
   if (entry === dir || !entry.startsWith(dir + path.sep)) throw new Error(`扩展 ${rel} 的 entry 跑到了目录外面：${meta.entry}`)
   const args = meta.args.trim()
-  // defaults 一并交回去：节点上没填的输入由它兜底（ADR-0013 写下的默认值，用法见 ADR-0015）
-  return { command: `node "${entry}"${args ? ` ${args}` : ''}`, name: meta.name, defaults: meta.defaults }
+  // defaults / outputs / route 一并交回去：输入兜底、出口与选路都现读清单（ADR-0015 / ADR-0017）
+  return {
+    command: `node "${entry}"${args ? ` ${args}` : ''}`,
+    name: meta.name,
+    defaults: meta.defaults,
+    outputs: meta.outputs,
+    route: meta.route,
+  }
 }
 
 const isDirectory = async (dir) => (await fs.stat(dir).catch(() => null))?.isDirectory() ?? false

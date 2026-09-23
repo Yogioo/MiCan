@@ -2,7 +2,8 @@
 // 节点自己也可以填常量（端口左边的那些框），填了就不必接边。
 // 命令节点里写 pi --skill {{技能A}}，跑之前被替换掉；替换只发生在运行时，不写回命令。
 import { dataInto, findNode } from './graph.mjs'
-import { cacheFile } from './paths.mjs'
+import { cacheFile, portFile } from './paths.mjs'
+import { pickValue } from './pick.mjs'
 import { TOKEN } from './tokens.mjs'
 
 // 节点上的路径是相对工作文件夹的 posix 路径，拼成这台机器上的绝对路径。
@@ -17,18 +18,23 @@ function fileOf(workspace, file) {
 // 来路的两副面孔，取出来的都是同一样东西 { text, file }：
 // 文本节点的值是它那份 md，命令节点的值是它的缓存文件。所以两种节点共用一套 token 规则。
 // 命令节点没跑过就等于没有值，返回 null 让调用方去报错。
-function valueOf(workspace, source) {
+function valueOf(workspace, source, fromPort = '', spec = '') {
   if (source.kind === 'text') {
     return { text: (source.text ?? '').trim(), file: fileOf(workspace, source.file ?? '') }
   }
   if (!source.result) return null
-  return { text: (source.result.output ?? '').trim(), file: fileOf(workspace, cacheFile(source.id)) }
+  const stdout = source.result.output ?? ''
+  if (!fromPort) return { text: stdout.trim(), file: fileOf(workspace, cacheFile(source.id)) }
+  const picked = pickValue(stdout, spec, { multiline: true })
+  if (picked.error) return { error: picked.error }
+  return { text: picked.value, file: fileOf(workspace, portFile(source.id, fromPort)) }
 }
 
 // 收集入边变量。所有对不上的地方攒起来一次报，别让用户一次修一个。
 // 值的合法性（空、换行）不在这里管：只有真被写进命令的那一个才算数。
-// defaults 是扩展清单给的默认值，**缺省回退**用：那个名字既没填常量、也没连边，才拿它顶上。
-export function collectVars(graph, id, workspace, defaults = {}) {
+// defaults 是扩展清单给的默认值；board 是这份画布的面板。都是**缺省回退**：
+// 那个名字既没填常量、也没连边，才往下找。连了边却没跑过（errors 里那条）不在这儿顶。
+export function collectVars(graph, id, workspace, defaults = {}, board = {}, sourceOutputs = {}) {
   const vars = new Map()
   const errors = []
   // 节点上填的常量先放进来：同一个名字既有常量又接了边时，边说了算（界面上那个框也会让位）。
@@ -50,15 +56,30 @@ export function collectVars(graph, id, workspace, defaults = {}) {
       continue
     }
     fromEdges.add(edge.label)
-    const value = valueOf(workspace, source)
+    const fromPort = edge.fromPort ?? ''
+    const spec = fromPort ? sourceOutputs[source.id]?.[fromPort] ?? '' : ''
+    if (fromPort && !spec) {
+      errors.push(`「${edge.label}」的来路没有「${fromPort}」这个出口`)
+      continue
+    }
+    const value = valueOf(workspace, source, fromPort, spec)
     if (!value) {
       errors.push(`「${edge.label}」的来路是命令节点，它还没跑过`)
       continue
     }
+    if (value.error) {
+      errors.push(`「${edge.label}」：${value.error}`)
+      continue
+    }
     vars.set(edge.label, value)
   }
-  // 兜底放在最后：常量与连线都看过了，才知道哪个名字真没人管。
+  // 兜底：常量与连线都看过了，才知道哪个名字真没人管。更具体的先：面板再扩展默认值。
   // 连了边却没跑过（errors 里那条）不在这儿顶 —— 边是更明确的来源，缺值就该报出来。
+  for (const [name, raw] of Object.entries(board)) {
+    const text = String(raw ?? '').trim()
+    if (!text || vars.has(name) || fromEdges.has(name)) continue
+    vars.set(name, { text, file: text })
+  }
   for (const [name, raw] of Object.entries(defaults)) {
     const text = String(raw ?? '').trim()
     if (!text || vars.has(name) || fromEdges.has(name)) continue

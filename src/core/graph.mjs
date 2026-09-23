@@ -163,19 +163,28 @@ export function dataOut(graph, id) {
 
 // 这条边能不能建：能就返回 null，不能就返回一句话当理由（界面直接拿去提示）。
 // 规则都集中在这里，建边的地方只管显示它，不自己判断。
-export function connectProblem(graph, from, to, kind) {
+export function connectProblem(graph, from, to, kind, extras = {}) {
   const source = findNode(graph, from)
   const target = findNode(graph, to)
   if (!source || !target) return '节点不在画布上'
   if (from === to) return '不能连到自己'
+  const fromPort = extras.fromPort ?? ''
   // 同一对节点之间允许两族的边各一条（UE 里就是两根不同的线）：
   // 执行边定先后、数据边传值，链上两个都要有。
-  if (graph.edges.some((edge) => edge.from === from && edge.to === to && edge.kind === kind)) {
-    return `这两点之间已经有一条${kind === 'exec' ? '执行边' : '数据边'}了`
+  // 数据边再按出口名区分：两个出口可以各自连到同一个去处。
+  if (graph.edges.some((edge) => edge.from === from && edge.to === to && edge.kind === kind && (edge.fromPort ?? '') === fromPort)) {
+    return fromPort
+      ? `这两点之间已经有一条从「${fromPort}」出来的数据边了`
+      : `这两点之间已经有一条${kind === 'exec' ? '执行边' : '数据边'}了`
   }
   if (kind === 'data') {
     // 触发节点没有值可传，也没有数据端口
     if (trigger(source) || trigger(target)) return '入口和定时器不传值（它们只有执行端口）'
+    if (fromPort) {
+      if (source.kind !== 'command' || !extensionOf(source)) return '出口只能从扩展节点拉出'
+      const names = extras.outputNames
+      if (!Array.isArray(names) || !names.includes(fromPort)) return `这个节点没有「${fromPort}」这个出口`
+    }
     return null
   }
   if (kind !== 'exec') return `不认识的边：${kind}`
@@ -198,9 +207,10 @@ export function connectProblem(graph, from, to, kind) {
 }
 
 // 建边：先问 connectProblem，问不过就建不出来。
-export function addEdge(graph, from, to, kind = 'data') {
-  if (connectProblem(graph, from, to, kind)) return null
+export function addEdge(graph, from, to, kind = 'data', extras = {}) {
+  if (connectProblem(graph, from, to, kind, extras)) return null
   const edge = { id: newId('e'), from, to, kind, label: '' }
+  if (extras.fromPort) edge.fromPort = extras.fromPort
   graph.edges.push(edge)
   return edge
 }

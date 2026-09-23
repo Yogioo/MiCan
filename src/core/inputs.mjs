@@ -21,6 +21,13 @@ export function inputsOf(node, extensions) {
   return item ? parseTokens(item.args) : []
 }
 
+// 清单里声明的出口名，顺序就是 yaml 里写下的顺序。
+export function outputsOf(node, extensions) {
+  if (!node?.extension) return []
+  const item = findExtension(extensions?.items, node.extension)
+  return item?.outputs ? Object.keys(item.outputs) : []
+}
+
 // 哪些输入已经有连线了。有连线的端口不看节点上填的常量 —— 边是更明确的那个来源，
 // 界面上那个框也会让位（变灰、写「由连线提供」）。
 export const wiredNames = (graph, id) =>
@@ -31,4 +38,10 @@ export const wiredNames = (graph, id) =>
 export function targetPortIndex(graph, edge, extensions) {
   if (edge.kind !== 'data' || !edge.label) return -1
   return inputsOf(findNode(graph, edge.to), extensions).findIndex((item) => item.name === edge.label)
+}
+
+// 数据边从哪个出口出去。没写出口名就是 -1 —— 仍从右侧那个整份值的数据端口走。
+export function sourcePortIndex(graph, edge, extensions) {
+  if (edge.kind !== 'data' || !edge.fromPort) return -1
+  return outputsOf(findNode(graph, edge.from), extensions).findIndex((name) => name === edge.fromPort)
 }

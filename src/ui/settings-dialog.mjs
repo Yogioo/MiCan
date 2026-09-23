@@ -180,6 +180,55 @@ function extensionImport(box, { hasWorkspace, onImported }) {
   })
 }
 
+// 面板：自由名单，字段表画不出 map。重名提交时后一行盖前一行。
+function boardEditor(box, initial) {
+  const group = groupBox(box, '面板', '这份画布共用的名字；节点没填也没连线时用。重名以后面那一行为准。')
+  const list = document.createElement('div')
+  const rows = []
+
+  const addRow = (name = '', value = '') => {
+    const row = document.createElement('div')
+    row.className = 'set-row set-board-row'
+    const nameInput = document.createElement('input')
+    nameInput.className = 'modal-path'
+    nameInput.spellcheck = false
+    nameInput.placeholder = '名字'
+    nameInput.value = name
+    const valueInput = document.createElement('input')
+    valueInput.className = 'modal-path'
+    valueInput.spellcheck = false
+    valueInput.placeholder = '值'
+    valueInput.value = value
+    const drop = button('set-restore', '删')
+    const item = { name: nameInput, value: valueInput }
+    drop.addEventListener('click', () => {
+      row.remove()
+      const index = rows.indexOf(item)
+      if (index >= 0) rows.splice(index, 1)
+    })
+    row.append(nameInput, valueInput, drop)
+    list.append(row)
+    rows.push(item)
+  }
+
+  const add = button('set-restore', '加一行')
+  add.addEventListener('click', () => addRow())
+  for (const [name, value] of Object.entries(initial)) addRow(name, value)
+  if (!rows.length) addRow()
+  group.append(list, add)
+
+  return () => {
+    const out = {}
+    for (const row of rows) {
+      const name = row.name.value.trim()
+      const value = row.value.value.trim()
+      if (!name || !value || value.includes('\n')) continue
+      out[name] = value
+    }
+    return out
+  }
+}
+
 export async function askSettings({ current, hasWorkspace = false, onImported } = {}) {
   const modal = openModal({ title: '设置', okText: '保存', wide: true })
   const readers = []
@@ -248,9 +297,11 @@ export async function askSettings({ current, hasWorkspace = false, onImported } 
   }
 
   layer('跟这台机器走', '存在用户目录里，换工作文件夹不变；不进画布存档', MACHINE_FIELDS, current.machine, 'machine')
-  layer('跟这份画布走', '进画布存档，换个工作文件夹打开就跟着变', CANVAS_FIELDS, current.canvas, 'canvas', (box) =>
-    extensionImport(box, { hasWorkspace, onImported }),
-  )
+  let readBoard = () => ({})
+  layer('跟这份画布走', '进画布存档，换个工作文件夹打开就跟着变', CANVAS_FIELDS, current.canvas, 'canvas', (box) => {
+    readBoard = boardEditor(box, current.board ?? {})
+    extensionImport(box, { hasWorkspace, onImported })
+  })
 
   const submit = async () => {
     const next = { machine: {}, canvas: {} }
@@ -272,7 +323,7 @@ export async function askSettings({ current, hasWorkspace = false, onImported } 
     modal.error.textContent = ''
     try {
       // 机器那一层交给后端存（它会把 cwd 这类规范成绝对路径）；画布那一层带回去由调用方收
-      modal.finish({ machine: await request('/api/settings', next.machine), canvas: next.canvas })
+      modal.finish({ machine: await request('/api/settings', next.machine), canvas: next.canvas, board: readBoard() })
     } catch (error) {
       modal.error.textContent = `保存失败：${error.message}`
     }

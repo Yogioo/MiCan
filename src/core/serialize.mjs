@@ -1,7 +1,7 @@
 // 存档格式：与工作文件夹里的 mican.json 共用的唯一结构。
 import { newId, runnable } from './graph.mjs'
 import { DEFAULT_SCHEDULE } from './schedule.mjs'
-import { canvasPatch, machine } from './settings.mjs'
+import { boardIn, boardPatch, canvasPatch, machine } from './settings.mjs'
 import { clampScale } from './view.mjs'
 
 export const FORMAT_VERSION = 6
@@ -9,10 +9,12 @@ export const FORMAT_VERSION = 6
 const READABLE = new Set([2, 3, 4, 5, FORMAT_VERSION])
 
 export function serialize(state) {
+  const board = boardPatch()
   return {
     version: FORMAT_VERSION,
     view: { x: state.view.x, y: state.view.y, scale: state.view.scale },
     settings: canvasPatch(), // 跟这份画布走的设置（换工作文件夹打开就跟着变）
+    ...(board ? { board } : {}), // 面板：空表不写进存档
     nodes: state.graph.nodes.map((node) => ({
       id: node.id,
       kind: node.kind,
@@ -41,6 +43,7 @@ export function serialize(state) {
       to: edge.to,
       kind: edge.kind,
       label: edge.label ?? '',
+      ...(edge.fromPort ? { fromPort: edge.fromPort } : {}),
     })),
     results: resultsOf(state.graph),
   }
@@ -177,7 +180,14 @@ export function deserialize(data) {
       if (isRunnable(head)) to = head
     }
     if (!edgeOk(kind, edge.from, to)) continue
-    edges.push({ id: edge.id, from: edge.from, to, kind, label: typeof edge.label === 'string' ? edge.label : '' })
+    edges.push({
+      id: edge.id,
+      from: edge.from,
+      to,
+      kind,
+      label: typeof edge.label === 'string' ? edge.label : '',
+      ...(typeof edge.fromPort === 'string' && edge.fromPort ? { fromPort: edge.fromPort } : {}),
+    })
   }
 
   // 元信息先挂上，裸输出等缓存文件那一份读回来再填（触发记录没有裸输出）。
@@ -197,6 +207,8 @@ export function deserialize(data) {
     },
     // 画布设置原样带出来，由调用方决定什么时候收进来（撤销快照里没有这一段，别顺手改了全局）
     settings: data.settings ?? null,
+    // 面板同理：不进撤销快照；没有这个键就是空表（旧存档）
+    board: boardIn(data.board),
     graph: { nodes, edges },
   }
 }

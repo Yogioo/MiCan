@@ -1,9 +1,9 @@
 // 节点层：渲染三类节点，处理拖动、缩放、选中、编辑、右键菜单。
 import { extensionOf, moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeConst, setNodeCwd, setNodeFile, setNodePick, setNodeSchedule, setNodeText } from '../core/graph.mjs'
 import { CMD_BAR_H, INPUT_ROW } from '../core/geometry.mjs'
-import { findExtension, inputsOf, wiredNames } from '../core/inputs.mjs'
+import { findExtension, inputsOf, outputsOf, wiredNames } from '../core/inputs.mjs'
 import { describeSchedule, dailyText, intervalText, nextFireAt, parseSchedule, scheduleFields } from '../core/schedule.mjs'
-import { canvas, machine } from '../core/settings.mjs'
+import { board, canvas, machine } from '../core/settings.mjs'
 import { toWorld } from '../core/view.mjs'
 import { renderMarkdown } from './markdown.mjs'
 
@@ -73,6 +73,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     const extName = ext ? findExtension(state.extensions?.items, ext)?.label ?? '' : ''
     // 输入端口区先摆好 —— 正文得按它的高度往下让
     renderInputs(el, node, state)
+    renderOutputs(el, node, state)
     const bar = ext ? extName || `找不到扩展：${ext}` : node.command
     const cmd = el.querySelector('.node-cmd')
     if (cmd.textContent !== bar) cmd.textContent = bar
@@ -141,14 +142,48 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     for (const row of box.children) {
       const field = row.querySelector('.node-port-value')
       const fromEdge = wired.has(row.dataset.name)
+      const fromBoard = board[row.dataset.name] ?? ''
       const fallback = declared?.defaults?.[row.dataset.name] ?? ''
       field.disabled = fromEdge
-      field.placeholder = fromEdge ? '由连线提供' : fallback ? `默认 ${fallback}` : '填值'
+      field.placeholder = fromEdge ? '由连线提供' : fromBoard ? `面板 ${fromBoard}` : fallback ? `默认 ${fallback}` : '填值'
       const wanted = fromEdge ? '' : node.consts?.[row.dataset.name] ?? ''
       if (document.activeElement !== field && field.value !== wanted) field.value = wanted
     }
     // 端口区把正文往下挤；没有输入就还回去，别留一条白缝
     el.querySelector('.node-body').style.top = inputs.length ? `${CMD_BAR_H + inputs.length * INPUT_ROW.step}px` : ''
+  }
+
+  // 清单声明的出口：右边一行一个名字，从这儿拉出的数据边带上出口名。
+  function renderOutputs(el, node, state) {
+    const box = el.querySelector('.node-outputs')
+    if (!box) return
+    const names = outputsOf(node, state.extensions)
+    const signature = names.join('|')
+    if (el._outPorts !== signature) {
+      box.textContent = ''
+      for (const [index, name] of names.entries()) box.append(outputRow(name, index))
+      el._outPorts = signature
+    }
+  }
+
+  function outputRow(name, index) {
+    const row = document.createElement('div')
+    row.className = 'node-output-row'
+    row.dataset.name = name
+
+    const label = document.createElement('span')
+    label.className = 'node-port-name'
+    label.textContent = name
+
+    const port = document.createElement('div')
+    port.className = 'node-port port-data port-out'
+    port.dataset.kind = 'data'
+    port.dataset.fromPort = name
+    port.dataset.index = String(index)
+    port.title = `出口「${name}」：从这里拉到下游，只送这一份字段`
+
+    row.append(label, port)
+    return row
   }
 
   // 一行输入端口：圆点（拉线、接线的抓手）、名字、填值的框
@@ -330,7 +365,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
           : node.kind === 'timer'
             ? `<div class="node-cmd"></div><div class="node-body"><div class="timer-form">${TIMER_FORM}</div></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
             : node.kind === 'command'
-              ? `<div class="node-cmd"></div><div class="node-inputs"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
+              ? `<div class="node-cmd"></div><div class="node-inputs"></div><div class="node-outputs"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
               : `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
 
     if (node.kind === 'timer') {
@@ -638,13 +673,17 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     const port = event.target.closest('.node-port')
     if (port) {
       event.stopPropagation()
-      const name = port.dataset.name ?? ''
-      const into = name ? { into: true, label: name, index: Number(port.dataset.index ?? 0) } : null
-      onConnectStart(id, port.dataset.kind ?? 'data', event, into)
+      const index = Number(port.dataset.index ?? 0)
+      const extras = port.classList.contains('port-in')
+        ? { into: true, label: port.dataset.name ?? '', index }
+        : port.dataset.fromPort
+          ? { fromPort: port.dataset.fromPort, index }
+          : null
+      onConnectStart(id, port.dataset.kind ?? 'data', event, extras)
       return
     }
-    // 输入端口的填值框：归它自己，别当成拖节点
-    if (event.target.closest('.node-port-row')) {
+    // 输入端口的填值框、出口那一行：归它们自己，别当成拖节点
+    if (event.target.closest('.node-port-row') || event.target.closest('.node-output-row')) {
       event.stopPropagation()
       return
     }

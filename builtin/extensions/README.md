@@ -11,4 +11,4 @@
 
 拷过去之后改的一直是**你工作文件夹里那份**；改坏了再导入一次。
 
-- [`pi/`](./pi/EXTENSION.md)：把 pi CLI 包成一个节点。拷过去就是 `extensions/pi/`。
+- [`pi/`](./pi/EXTENSION.md)：把 pi CLI 包成一个节点。拷过去就是 `extensions/pi/`。清单里声明了 `ok` / `text` / `reason` 三个出口，选路看 `ok`。

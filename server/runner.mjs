@@ -5,7 +5,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { routeFrom } from '../src/core/chain.mjs'
 import { dataInto, dataOut, execIn, execOutAll, extensionOf, findNode, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
-import { CANVAS_FILE, cacheFile, logFile } from '../src/core/paths.mjs'
+import { CANVAS_FILE, cacheFile, logFile, portFile } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { deserialize, resultMeta } from '../src/core/serialize.mjs'
 import { applyCanvas, canvas } from '../src/core/settings.mjs'
@@ -61,7 +61,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
   async function loadGraph(root) {
     const raw = await fs.readFile(path.join(root, CANVAS_FILE), 'utf8').catch(() => null)
     if (raw === null) throw new Error('这个文件夹里没有画布存档（mican.json）')
-    const { graph, settings } = deserialize(JSON.parse(raw))
+    const { graph, settings, board } = deserialize(JSON.parse(raw))
     applyCanvas(settings) // 步数上限、画布运行目录都在这份存档里
     for (const node of graph.nodes) {
       if (!node.result) continue
@@ -69,7 +69,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       node.result.output = await fs.readFile(path.join(root, cacheFile(node.id)), 'utf8').catch(() => '')
       node.result.log = await fs.readFile(path.join(root, logFile(node.id)), 'utf8').catch(() => '')
     }
-    return graph
+    return { graph, board: board && typeof board === 'object' ? board : {} }
   }
 
   // 存档的补写：只动这次跑出来的那两处（results 里的一格、下游文本节点的正文）。
@@ -87,11 +87,43 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
   // 一个节点的值的正文：文本节点是那份 md，会跑的节点是最近一次运行的输出。
   const valueText = (node) => (!node ? '' : node.kind === 'text' ? (node.text ?? '') : (node.result?.output ?? ''))
   // 提取节点的源：默认取执行来路那个节点的值（先后由执行边给），有数据入边就用那份文本。
-  function sourceTextOf(graph, id) {
-    const edge = dataInto(graph, id)[0]
-    if (edge) return valueText(findNode(graph, edge.from))
-    const inEdge = execIn(graph, id)
-    return inEdge ? valueText(findNode(graph, inEdge.from)) : ''
+  // 入边写了出口名，就只拿那一个出口（可以多行；提取自己的取法再收成单行）。
+  async function sourceTextOf(run, id) {
+    const edge = dataInto(run.graph, id)[0]
+    if (edge) {
+      const source = findNode(run.graph, edge.from)
+      if (!edge.fromPort) return { text: valueText(source) }
+      const picked = await pickPort(run, source, edge.fromPort, { multiline: true })
+      return picked.error ? picked : { text: picked.value }
+    }
+    const inEdge = execIn(run.graph, id)
+    return { text: inEdge ? valueText(findNode(run.graph, inEdge.from)) : '' }
+  }
+
+  async function outputsOf(run, node) {
+    const ext = extensionOf(node)
+    if (!ext) return { outputs: {}, route: '' }
+    const built = await commandOf(run.root, ext)
+    return { outputs: built.outputs ?? {}, route: built.route ?? '' }
+  }
+
+  async function pickPort(run, node, name, options = {}) {
+    const { outputs } = await outputsOf(run, node)
+    const spec = outputs[name]
+    if (!spec) return { error: `没有「${name}」这个出口` }
+    const picked = pickValue(valueText(node), spec, options)
+    return picked.error ? { error: `出口「${name}」取不到：${picked.error}` } : picked
+  }
+
+  async function sourceOutputsOf(run, id) {
+    const maps = {}
+    for (const edge of dataInto(run.graph, id)) {
+      if (!edge.fromPort) continue
+      const source = findNode(run.graph, edge.from)
+      if (!source || maps[source.id]) continue
+      maps[source.id] = (await outputsOf(run, source)).outputs
+    }
+    return maps
   }
 
   // 命令的运行目录：节点自己设了就用节点的（覆盖），没设就看这份画布的，都没有就是工作文件夹。
@@ -105,9 +137,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     if (!node || !runnable(node)) return { error: '这个节点运行不了' }
 
     // 只有数据边把输出带得走；执行边只表达先后，不带数据
-    const targets = dataOut(graph, id)
-      .map((edge) => findNode(graph, edge.to))
-      .filter((item) => item?.kind === 'text')
+    const outEdges = dataOut(graph, id)
+    const targets = outEdges.map((edge) => findNode(graph, edge.to)).filter((item) => item?.kind === 'text')
     // 这一步要写的东西先记下：从这一刻起它们归运行器，前端的落盘要跳过
     run.step = step
     run.ids.add(id)
@@ -121,9 +152,11 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     // 验过了才报「这一步开跑」—— 那件事的意思是「有个进程跑起来了」，提取节点没有进程。
     if (node.kind === 'extract') {
       // 提取节点不 spawn 任何进程：拿源文本按取法取出一个字符串，那就是它的值
-      const { value, error } = pickValue(sourceTextOf(graph, id), node.pick ?? '')
+      const source = await sourceTextOf(run, id)
+      if (source.error) return { error: source.error }
+      const { value, error } = pickValue(source.text, node.pick ?? '')
       if (error) return { error: `提取不出值：${error}` }
-      return { ...(await settle(run, node, { output: value, at: Date.now(), elapsed: Date.now() - startedAt }, targets)), targets: targets.length }
+      return { ...(await settle(run, node, { output: value, at: Date.now(), elapsed: Date.now() - startedAt }, outEdges)), targets: targets.length }
     }
 
     // 命令从哪来：手写的在节点上；引用扩展的现读那份清单拼一条 —— 节点存的是引用，
@@ -131,18 +164,22 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     const ext = extensionOf(node)
     let template = node.command
     let defaults = {}
+    let outputs = {}
+    let route = ''
     if (ext) {
       try {
         const built = await commandOf(run.root, ext)
         template = built.command
         defaults = built.defaults ?? {}
+        outputs = built.outputs ?? {}
+        route = built.route ?? ''
       } catch (error) {
         return { error: error.message }
       }
     } else if (!template.trim()) return { error: '这个命令节点还没有命令' }
     // 变量注入只改这一次要跑的命令，节点上的模板不动；取值是「此刻」的。
     // 框里留空、又没连线的那几个输入，拿清单里的默认值顶上 —— 所以节点上干干净净，改清单对所有引用它的节点立刻生效。
-    const { vars, errors } = collectVars(graph, id, run.root, defaults)
+    const { vars, errors } = collectVars(graph, id, run.root, defaults, run.board, await sourceOutputsOf(run, id))
     const injected = applyVars(template, vars)
     const problems = [...new Set([...errors, ...injected.problems])]
     if (problems.length) return { error: `变量没对上：${problems.join('；')}` }
@@ -179,26 +216,50 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       at: Date.now(),
       elapsed: Date.now() - startedAt, // 跑完也留着，脚上照样看得到跑了多久
     }
-    return { ...(await settle(run, node, result, targets)), targets: targets.length }
+    return { ...(await settle(run, node, result, outEdges, outputs)), targets: targets.length, route, outputs }
   }
 
   // 结果三处落地：裸输出进缓存文件、正文进下游文本节点的 md、元信息补进存档，
   // 然后告诉前端这一步完了。停止或失败都不覆写下游文本节点。
   // 诊断（stderr）单独存成 .log，跟缓存文件挨着 —— 它不进值，只让人过后能翻。
-  async function settle(run, node, result, targets) {
+  async function settle(run, node, result, outEdges, outputs = {}) {
     node.result = result
     const cache = path.join(run.root, cacheFile(node.id))
     await fs.mkdir(path.dirname(cache), { recursive: true })
     await fs.writeFile(cache, result.output ?? '', 'utf8')
     await fs.writeFile(path.join(run.root, logFile(node.id)), result.log ?? '', 'utf8')
-    const written = result.failed ? [] : targets
-    for (const item of written) {
-      const file = path.join(run.root, item.file)
-      await fs.mkdir(path.dirname(file), { recursive: true })
-      await fs.writeFile(file, result.output ?? '', 'utf8')
-      item.text = result.output ?? '' // 下游拿它当值（{{名字}}），所以内存里也得跟着换
+    // 取得到的出口各写一份边车；取不到的不写 —— 用到那条边或选路时再报错。
+    if (!result.failed) {
+      for (const [name, spec] of Object.entries(outputs)) {
+        const picked = pickValue(result.output ?? '', spec, { multiline: true })
+        if (picked.error) continue
+        await fs.writeFile(path.join(run.root, portFile(node.id, name)), picked.value, 'utf8')
+      }
     }
-    const texts = written.map((item) => ({ nodeId: item.id, text: result.output }))
+    const texts = []
+    if (!result.failed) {
+      const pending = []
+      for (const edge of outEdges) {
+        const item = findNode(run.graph, edge.to)
+        if (item?.kind !== 'text') continue
+        let text = result.output ?? ''
+        if (edge.fromPort) {
+          const spec = outputs[edge.fromPort]
+          if (!spec) return { error: `没有「${edge.fromPort}」这个出口` }
+          const picked = pickValue(text, spec, { multiline: true })
+          if (picked.error) return { error: `出口「${edge.fromPort}」取不到：${picked.error}` }
+          text = picked.value
+        }
+        pending.push({ item, text })
+      }
+      for (const { item, text } of pending) {
+        const file = path.join(run.root, item.file)
+        await fs.mkdir(path.dirname(file), { recursive: true })
+        await fs.writeFile(file, text, 'utf8')
+        item.text = text
+        texts.push({ nodeId: item.id, text })
+      }
+    }
     await patchArchive(run.root, {
       results: { [node.id]: resultMeta(node) },
       texts: Object.fromEntries(texts.map((item) => [item.nodeId, item.text])),
@@ -226,7 +287,14 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       if (run.mode === 'node') {
         return finish(run, 'ok', outcome.targets ? `输出已灌给 ${outcome.targets} 个下游文本节点` : '没有下游文本节点，输出只显示在节点上')
       }
-      const value = (result.output ?? '').trim()
+      let value = (result.output ?? '').trim()
+      if (outcome.route) {
+        const spec = outcome.outputs?.[outcome.route]
+        if (!spec) return finish(run, 'error', stepMessage(run, step, `清单的 route「${outcome.route}」不是一个出口`))
+        const picked = pickValue(result.output ?? '', spec)
+        if (picked.error) return finish(run, 'error', stepMessage(run, step, `选路「${outcome.route}」取不到：${picked.error}`))
+        value = picked.value
+      }
       const next = routeFrom(run.graph, cursor, value)
       if (next.done) return finish(run, 'ok', `链路跑完：${step} 步，走到一个没有出边的节点`)
       if (next.stuck) {
@@ -245,7 +313,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     const root = getRoot()
     if (!root) throw new Error('先打开一个工作文件夹，命令才有地方跑')
     if (owns(id)) throw new Error('这个节点还在跑，等它结束')
-    const graph = await loadGraph(root)
+    const { graph, board } = await loadGraph(root)
     const node = findNode(graph, id)
     if (!node) throw new Error('这个节点不在画布上')
     // 跑链从触发节点（入口或定时器）出发：它自己没有进程，第一步是它那根出边指到的节点
@@ -271,6 +339,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       ids: new Set([id]),
       files: new Set(),
       graph,
+      board,
       root,
       events: [],
       subscribers: new Set(),

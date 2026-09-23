@@ -436,8 +436,40 @@ body.space-ready #viewport {
   opacity: 0.55;
 }
 
+/* 出口：跟输入同一套行高，圆点落在右边框上。名字靠右，不占左边那一排输入框。 */
+.node-outputs {
+  position: absolute;
+  top: 26px;
+  right: 0;
+  width: 72px;
+  pointer-events: none;
+}
+
+.node-output-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 26px;
+  padding: 0 16px 0 0;
+  pointer-events: auto;
+}
+
+.node-output-row .node-port-name {
+  text-align: right;
+}
+
+.node-output-row .node-port.port-out {
+  top: 50%;
+  right: -6px;
+  left: auto;
+  opacity: 0.55;
+}
+
 .node:hover .node-port-row .node-port.port-in,
-.node.selected .node-port-row .node-port.port-in {
+.node.selected .node-port-row .node-port.port-in,
+.node:hover .node-output-row .node-port.port-out,
+.node.selected .node-output-row .node-port.port-out {
   opacity: 1;
 }
 
@@ -1052,6 +1084,10 @@ body.space-ready #viewport {
   grid-template-columns: 122px 168px 1fr;
   gap: 8px;
   align-items: center;
+}
+
+.set-board-row {
+  grid-template-columns: 122px 1fr auto;
 }
 
 .set-row input,

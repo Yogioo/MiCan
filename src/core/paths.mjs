@@ -10,3 +10,5 @@ export const LOG_EXT = '.log'
 // .out 是值（stdout），.log 是诊断（stderr）—— 后者只在节点上显示，不进值、不往下游走。
 export const cacheFile = (id) => `${CACHE_DIR}/${id}${CACHE_EXT}`
 export const logFile = (id) => `${CACHE_DIR}/${id}${LOG_EXT}`
+// 出口的边车：挨着缓存文件，一份对一个出口。节点的值仍是那份 .out。
+export const portFile = (id, port) => `${CACHE_DIR}/${id}.${String(port).replace(/[\\/]/g, '_')}${CACHE_EXT}`

@@ -25,17 +25,18 @@ function oneLine(text) {
 }
 
 // 入口：spec 是取法那段文本。要么 { value }，要么 { error } —— 一句话说清为什么取不到。
-export function pickValue(text, spec) {
+// multiline：出口上的字段可以多行（回话、评论）；提取节点 / 选路仍走默认的单行。
+export function pickValue(text, spec, { multiline = false } = {}) {
   const { format, path, error } = parsePick(spec)
   if (error) return { error }
   const source = String(text ?? '').trim()
   if (!source) return { error: '来路没有值，先跑上游' }
-  if (format === 'json') return pickJson(source, path)
+  if (format === 'json') return pickJson(source, path, multiline)
   return { error: `不认识的格式：${format}` }
 }
 
-// JSON 的单字段路径（a.b.c）。取不到、取出来不是一行，都当错 —— 不静默给空值。
-function pickJson(source, path) {
+// JSON 的单字段路径（a.b.c）。取不到、对象/数组、空值都当错 —— 不静默给空值。
+function pickJson(source, path, multiline) {
   let data
   try {
     data = JSON.parse(source)
@@ -48,6 +49,11 @@ function pickJson(source, path) {
     cursor = cursor[key]
   }
   if (cursor === null) return { error: `「${path}」是 null` }
-  if (typeof cursor === 'object') return { error: `「${path}」不是一行文本` }
-  return oneLine(typeof cursor === 'string' ? cursor : String(cursor))
+  if (typeof cursor === 'object') return { error: `「${path}」是对象或数组，不能当值` }
+  const text = typeof cursor === 'string' ? cursor : String(cursor)
+  if (multiline) {
+    if (!text.trim()) return { error: '取出来是空的' }
+    return { value: text }
+  }
+  return oneLine(text)
 }
