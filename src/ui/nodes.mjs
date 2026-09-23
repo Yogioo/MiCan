@@ -546,6 +546,73 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
 
   // ---- 拖动 / 缩放 / 选中 ----
 
+  // ---- 划字：只许在会跑的节点正文里 ----
+
+  // 正文是留着抄输出的，可它落在整篇文档里：从 A 的正文拖到 B 的正文，B 的字也跟着被圈上；
+  // 从空白处拉框选，路过谁的正文就把谁的字划上。定一条规矩：按在正文里，就只许在这块正文里划；
+  // 按在别处，这一趟一个字也不许划（旧的那段顺带放掉，不然浏览器会把这趟拖动当成拖那段文字）。
+  let textScope = null // 正在划字的那块正文；null 就是「这趟不许划字」
+  let lastGood = null // 上一次整个落在这块正文里的范围
+
+  const selectableBody = (target) => {
+    const body = target.closest?.('.node-body')
+    const nodeEl = target.closest?.('.node')
+    // 只有命令、提取两种节点（会跑的）的正文能选：跟 CSS 里那条 user-select: text 是同一件事
+    if (!body || !nodeEl) return null
+    if (!nodeEl.classList.contains('kind-command') && !nodeEl.classList.contains('kind-extract')) return null
+    // 多选之后这一拖是「整批搬家」，跟正文没关系：别顺手把正文划上一片
+    const selected = getState().selection
+    if (selected.size > 1 && selected.has(nodeEl.dataset.id)) return null
+    return body
+  }
+
+  window.addEventListener(
+    'pointerdown',
+    (event) => {
+      textScope = selectableBody(event.target)
+      lastGood = null
+      const picked = window.getSelection()
+      if (!picked || picked.isCollapsed) return
+      // 按在选中范围里：交给浏览器接着划；按在范围外：放掉
+      try {
+        if (textScope && picked.containsNode(event.target, true)) return
+      } catch {
+        // 问不出来的话，就当按在了外面
+      }
+      picked.removeAllRanges()
+    },
+    true,
+  )
+
+  function endTextDrag() {
+    textScope = null
+    lastGood = null
+  }
+
+  window.addEventListener('pointerup', endTextDrag)
+  window.addEventListener('pointercancel', endTextDrag)
+
+  document.addEventListener('selectionchange', () => {
+    const picked = window.getSelection()
+    if (!picked || !picked.rangeCount || picked.isCollapsed) return
+    // 没在正文里按下：这趟不许划字（拉框选路过节点时，也就不会顺手把输出划上）
+    if (!textScope) {
+      picked.removeAllRanges()
+      return
+    }
+    const range = picked.getRangeAt(0)
+    if (textScope.contains(range.startContainer) && textScope.contains(range.endContainer)) {
+      lastGood = range.cloneRange()
+      return
+    }
+    // 范围跑出去了：退回最后一次还规矩的那段。浏览器拖出节点时会先丢一个空范围过来，
+    // 那种不算数 —— 上面一进门就把空范围跳过。范围连着的那段要是已经被重渲染换掉，
+    // 也退回不了（流式输出正在刷正文时就是这样），那就不管了。
+    if (!lastGood || !lastGood.startContainer.isConnected) return
+    picked.removeAllRanges()
+    picked.addRange(lastGood)
+  })
+
   function onPointerDown(event) {
     if (event.button !== 0) return
     const el = event.currentTarget
@@ -572,10 +639,21 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       return
     }
 
+    const handle = Boolean(event.target.closest('.node-handle'))
+    // 按下的节点已经在多选里：这一拖是整批搬家，得把同伴的起点也记下来一起挪。
+    // 只有多选才成组；单选时跟从前一样，按下就只选它。
+    const grouped = !handle && getState().selection.has(id) && getState().selection.size > 1
+    const origins = grouped
+      ? getState().graph.nodes
+          .filter((item) => getState().selection.has(item.id))
+          .map((item) => ({ id: item.id, x: item.x, y: item.y }))
+      : null
+
     // 输出是给人看、给人抄的：从正文上按下的不当拖动，把选字让给浏览器，方便调试时复制。
     // 拖动节点还有标题条和四周的边；正文空着时照旧整块都能拖。
+    // 但圈了一批之后再从正文上按下，要的是搬走这一批 —— 整批拖动压过选字。
     const hasBody = node.kind === 'command' || node.kind === 'extract'
-    if (hasBody && event.target.closest('.node-body') && bodyOutput(node, getState())) {
+    if (!grouped && hasBody && event.target.closest('.node-body') && bodyOutput(node, getState())) {
       event.stopPropagation()
       update((state) => {
         state.selection = new Set([id])
@@ -583,13 +661,14 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       return
     }
 
-    const handle = Boolean(event.target.closest('.node-handle'))
     const origin = { px: event.clientX, py: event.clientY, x: node.x, y: node.y, w: node.w, h: node.h }
     let moved = false
 
-    update((state) => {
-      state.selection = new Set([id])
-    })
+    if (!grouped) {
+      update((state) => {
+        state.selection = new Set([id])
+      })
+    }
 
     el.setPointerCapture(event.pointerId)
 
@@ -601,12 +680,23 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       const { scale } = getState().view
       if (handle) {
         update((state) => resizeNode(state.graph, id, origin.w + dx / scale, origin.h + dy / scale))
+      } else if (origins) {
+        // 一步挪完一批：同一次 update，撤销也是一步
+        update((state) => {
+          for (const item of origins) moveNode(state.graph, item.id, item.x + dx / scale, item.y + dy / scale)
+        })
       } else {
         update((state) => moveNode(state.graph, id, origin.x + dx / scale, origin.y + dy / scale))
       }
     }
 
     function onEnd() {
+      // 在多选里点了一下却没拖动：跟普通点一下一样，选择收拢到这一个
+      if (grouped && !moved) {
+        update((state) => {
+          state.selection = new Set([id])
+        })
+      }
       el.removeEventListener('pointermove', onMove)
       el.removeEventListener('pointerup', onEnd)
       el.removeEventListener('pointercancel', onEnd)
