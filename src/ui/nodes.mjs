@@ -1,5 +1,5 @@
 // 节点层：渲染三类节点，处理拖动、缩放、选中、编辑、右键菜单。
-import { moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeCwd, setNodeFile, setNodePick, setNodeSchedule, setNodeText } from '../core/graph.mjs'
+import { extensionOf, moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeCwd, setNodeFile, setNodePick, setNodeSchedule, setNodeText } from '../core/graph.mjs'
 import { describeSchedule, dailyText, intervalText, nextFireAt, parseSchedule, scheduleFields } from '../core/schedule.mjs'
 import { canvas, machine } from '../core/settings.mjs'
 import { toWorld } from '../core/view.mjs'
@@ -8,11 +8,21 @@ import { renderMarkdown } from './markdown.mjs'
 // 本机绝对路径：盘符（C:\、C:/）、UNC（\\server）、或 / 开头；其余当相对工作文件夹
 const isAbsolutePath = (value) => /^(?:[a-zA-Z]:[\\/]|[\\/])/.test(value)
 
+// 从菜单那份树里按路径找扩展的名字；找不到就返回空串（调用方当坏引用处理）。
+function nameOfExtension(items, path) {
+  for (const item of items ?? []) {
+    if (item.entry && item.path === path) return item.label
+    const found = nameOfExtension(item.children, path)
+    if (found) return found
+  }
+  return ''
+}
+
 const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
 // 脚上的时刻：默认只到分；秒级定时器要看到秒，不然一秒响一次也像什么都没发生
 const clockOf = (ts, withSeconds = false) => new Date(ts).toTimeString().slice(0, withSeconds ? 8 : 5)
 
-export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onNewCommandNode, onNewExtractNode, onNewEntryNode, onNewTimerNode, onSetRunDir }) {
+export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onNewCommandNode, onNewExtractNode, onNewEntryNode, onNewTimerNode, onNewExtensionNode, onSetRunDir }) {
   const layer = document.getElementById('nodes')
   const viewport = document.getElementById('viewport')
   const elements = new Map()
@@ -65,12 +75,18 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
 
   function renderCommand(el, node, state) {
     const running = state.running.has(node.id)
+    // 引用扩展的节点：命令不归用户写，条上显示扩展的名字（ADR-0014）。名字从菜单那份树里现查；
+    // 查不到就是坏引用 —— 标红、提示路径，但连线一个不动。
+    const ext = extensionOf(node)
+    const extName = ext ? nameOfExtension(state.extensions?.items, ext) : ''
+    const bar = ext ? extName || `找不到扩展：${ext}` : node.command
     const cmd = el.querySelector('.node-cmd')
-    if (cmd.textContent !== node.command) cmd.textContent = node.command
+    if (cmd.textContent !== bar) cmd.textContent = bar
     // 命令里有 {{变量}} / [[变量]] 时节点上留的是模板；鼠标停上去看实际跑了哪条、在哪个目录跑
     const own = node.cwd // 节点自己写的：相对工作文件夹，或本机绝对路径
     const runDir = own || canvas.cwd || ''
     const notes = []
+    if (ext) notes.push(extName ? `扩展：${ext}` : `找不到扩展：${ext}（工作文件夹里那个目录还在不在？）`)
     if (own) notes.push(`运行目录：${own}（${isAbsolutePath(own) ? '本机绝对路径' : '相对工作文件夹'}）`)
     else if (runDir) notes.push(`运行目录：${runDir}（全局）`)
     const resolved = node.result?.command
@@ -91,7 +107,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       el._content = content
       el._failed = failed
     }
-    body.classList.toggle('need-cmd', !node.command) // 还没写命令时，占位文字改成提示怎么填
+    body.classList.toggle('need-cmd', !ext && !node.command) // 还没写命令时，占位文字改成提示怎么填
+    el.classList.toggle('invalid', Boolean(ext) && !extName) // 坏引用标红（认不出的时间表也用这个类）
     el.classList.toggle('running', running)
     // 设了运行目录（全局或节点）就在脚上带出来，不然跑完就忘了
     const at = own === '.' ? '工作文件夹' : own || runDir
@@ -260,6 +277,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       const current = getState().graph.nodes.find((item) => item.id === el.dataset.id)
       if (!current) return
       if (current.kind === 'command') {
+        // 引用扩展的节点没有可写的命令：要改就改扩展目录里那份清单（ADR-0014）
+        if (extensionOf(current)) return
         // 编辑命令用的是整个正文区（够大），上面的命令条先让开
         beginBodyEdit(el, current.command, (value) => update((state) => setNodeCommand(state.graph, current.id, value)), el.querySelector('.node-cmd'))
       } else if (current.kind === 'extract') {
@@ -370,13 +389,24 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     menu.hidden = true
   }
 
-  function openMenu(x, y, items) {
+  // 带 items 的那一项是子菜单：点进去把菜单内容换成那一层，顶上留一条「← 返回」。
+  // 不另开浮层 —— 扩展的分组可以有好几层，浮层得算位置、还得处理出界。
+  function openMenu(x, y, items, back = null) {
     menu.textContent = ''
+    if (back) {
+      const button = document.createElement('button')
+      button.type = 'button'
+      button.className = 'menu-back'
+      button.textContent = '← 返回'
+      button.addEventListener('click', () => openMenu(x, y, back.items, back.back))
+      menu.append(button)
+    }
     for (const item of items) {
       const button = document.createElement('button')
       button.type = 'button'
-      button.textContent = item.label
+      button.textContent = item.items ? `${item.label} ▸` : item.label
       button.addEventListener('click', () => {
+        if (item.items) return openMenu(x, y, item.items, { items, back })
         closeMenu()
         item.run()
       })
@@ -387,6 +417,14 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     menu.style.top = `${Math.min(y, window.innerHeight - menu.offsetHeight - 6)}px`
   }
 
+  // 扩展树 → 菜单项。分组往下开子菜单，扩展项点一下就在画布上落一个引用它的命令节点。
+  const extensionMenu = (items, world) =>
+    items.map((item) =>
+      item.children
+        ? { label: item.label, items: extensionMenu(item.children, world) }
+        : { label: item.label, run: () => onNewExtensionNode(world, item.path) },
+    )
+
   viewport.addEventListener('contextmenu', (event) => {
     const nodeEl = event.target.closest('.node')
     if (!nodeEl && event.target.closest('.edge-hit')) return // 边：留给浏览器的原生菜单
@@ -394,12 +432,16 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
 
     if (!nodeEl) {
       const world = toWorld(getState().view, event.clientX, event.clientY)
-      openMenu(event.clientX, event.clientY, [
+      const items = [
         { label: '新建命令节点', run: () => onNewCommandNode(world) },
         { label: '新建提取节点', run: () => onNewExtractNode(world) },
         { label: '新建入口节点', run: () => onNewEntryNode(world) },
         { label: '新建定时器节点', run: () => onNewTimerNode(world) },
-      ])
+      ]
+      // 扩展：工作文件夹里扫出来的那些（没打开文件夹就没有），分组自己会往下开
+      const extensions = extensionMenu(getState().extensions?.items ?? [], world)
+      if (extensions.length) items.push({ label: '新建扩展节点', items: extensions })
+      openMenu(event.clientX, event.clientY, items)
       return
     }
 

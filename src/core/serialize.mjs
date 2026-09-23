@@ -21,7 +21,7 @@ export function serialize(state) {
       w: node.w,
       h: node.h,
       ...(node.kind === 'command'
-        ? { command: node.command, ...(node.cwd ? { cwd: node.cwd } : {}) }
+        ? { command: node.command, ...(node.cwd ? { cwd: node.cwd } : {}), ...(node.extension ? { extension: node.extension } : {}) }
         : node.kind === 'extract'
           ? { pick: node.pick ?? '' }
           : node.kind === 'timer'
@@ -92,6 +92,8 @@ export function deserialize(data) {
         ...size,
         command: typeof node.command === 'string' ? node.command : '',
         cwd: typeof node.cwd === 'string' ? node.cwd : '',
+        // 引用扩展的节点：存的是扩展目录（相对工作文件夹），命令在跑的时候现拼（ADR-0014）
+        extension: typeof node.extension === 'string' ? node.extension : '',
       }
     }
     if (node.kind === 'extract') {

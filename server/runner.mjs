@@ -4,13 +4,14 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { routeFrom } from '../src/core/chain.mjs'
-import { dataInto, dataOut, execIn, execOutAll, findNode, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
+import { dataInto, dataOut, execIn, execOutAll, extensionOf, findNode, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
 import { CANVAS_FILE, cacheFile } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { deserialize, resultMeta } from '../src/core/serialize.mjs'
 import { applyCanvas, canvas } from '../src/core/settings.mjs'
 import { applyVars, collectVars } from '../src/core/vars.mjs'
 import { startCommand } from './exec.mjs'
+import { commandOf } from './extensions.mjs'
 
 // 跑完的记录留一会儿再扔：事件流断过的页面重连时还补得上最后那句话。
 const KEEP_DONE_MS = 2 * 60 * 1000
@@ -122,10 +123,20 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       return { ...(await settle(run, node, { output: value, at: Date.now(), elapsed: Date.now() - startedAt }, targets)), targets: targets.length }
     }
 
-    if (!node.command.trim()) return { error: '这个命令节点还没有命令' }
+    // 命令从哪来：手写的在节点上；引用扩展的现读那份清单拼一条 —— 节点存的是引用，
+    // 改扩展对所有引用它的节点立刻生效（ADR-0014）。扩展读不到就停在这一步。
+    const ext = extensionOf(node)
+    let template = node.command
+    if (ext) {
+      try {
+        template = (await commandOf(run.root, ext)).command
+      } catch (error) {
+        return { error: error.message }
+      }
+    } else if (!template.trim()) return { error: '这个命令节点还没有命令' }
     // 变量注入只改这一次要跑的命令，节点上的模板不动；取值是「此刻」的
     const { vars, errors } = collectVars(graph, id, run.root)
-    const injected = applyVars(node.command, vars)
+    const injected = applyVars(template, vars)
     const problems = [...new Set([...errors, ...injected.problems])]
     if (problems.length) return { error: `变量没对上：${problems.join('；')}` }
     const cwd = await resolveCwd(runDirOf(node)) // 运行目录不存在就停在起跑线上

@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, cacheFile } from '../src/core/paths.mjs'
 import { shellNames } from './exec.mjs'
+import { scanExtensions } from './extensions.mjs'
 import { createRunner } from './runner.mjs'
 import { createScheduler } from './scheduler.mjs'
 
@@ -291,6 +292,10 @@ export function createApi(initialRoot) {
         return answer(await writeSettings(patch))
       }
       if (route === '/api/browse') return send(res, 200, await browse(body.path))
+      // 菜单里的扩展：扫工作文件夹的 nodes/，只读清单的 yaml 头（ADR-0013）
+      if (route === '/api/extensions') {
+        return send(res, 200, root ? await scanExtensions(root) : { items: [], problems: [] })
+      }
       if (route === '/api/save') {
         await save(body)
         return send(res, 200, { ok: true })

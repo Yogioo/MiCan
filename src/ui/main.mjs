@@ -30,6 +30,8 @@ export const state = {
   // 不重号，所以两类混在一处也认得出来，删的时候分开处理就是。
   selection: new Set(),
   workspace: null, // 工作文件夹的绝对路径，未打开时为 null
+  // 工作文件夹里 nodes/ 扫出来的菜单树（扩展）：{ items, problems }。跟着工作文件夹走，不进存档
+  extensions: { items: [], problems: [] },
   // 跟机器走的那些值（命令行、超时、界面手感）不住在这儿：它们住在 core/settings.mjs，现读现用；
   // 运行目录属于画布，在 canvas.cwd
   running: new Map(), // 运行中的命令节点：id -> 开跑时间。只活在内存里，不进存档
@@ -194,6 +196,23 @@ function remember(response) {
   recent = response.recent ?? recent
 }
 
+// 菜单里的扩展跟着工作文件夹走（ADR-0012）：换一个文件夹就重扫一遍。
+// 认不出来的那几个只报一句，不挡住别的 —— 一个坏扩展不该让整张菜单空掉。
+async function loadExtensions() {
+  const empty = { items: [], problems: [] }
+  try {
+    state.extensions = state.workspace ? await api('/api/extensions', {}) : empty
+  } catch (error) {
+    state.extensions = empty
+    showMessage(`读扩展失败：${error.message}`)
+    return
+  }
+  notify()
+  if (state.extensions.problems?.length) {
+    showMessage(`${state.extensions.problems.length} 个扩展没认出来：${state.extensions.problems[0]}`)
+  }
+}
+
 // 打开 / 另存为之后，画布与磁盘就是一致的，所以直接把状态按上去，不排落盘。
 // next 就是接下来要用的那份 { graph, view }：打开时是读出来的，另存为时就是手上这份。
 function adoptWorkspace(root, next) {
@@ -204,6 +223,7 @@ function adoptWorkspace(root, next) {
   state.view = next.view
   state.selection = new Set()
   notify()
+  loadExtensions()
 }
 
 async function saveAs() {
@@ -286,11 +306,12 @@ async function openStartupWorkspace() {
 
 // ---- 节点 ----
 
-function createNodeAt(world, kind) {
+function createNodeAt(world, kind, extra = {}) {
   const node = createNode({
     kind,
     x: world.x - machine.nodeDefaultW / 2,
     y: world.y - machine.nodeDefaultH / 2,
+    ...extra,
   })
   update((draft) => {
     draft.graph.nodes.push(node)
@@ -671,6 +692,8 @@ const nodes = mountNodes({
   onNewExtractNode: (world) => createNodeAt(world, 'extract'),
   onNewEntryNode: (world) => createNodeAt(world, 'entry'),
   onNewTimerNode: (world) => createNodeAt(world, 'timer'),
+  // 扩展节点就是一个命令节点，只是命令从扩展那份清单里拼（ADR-0014）
+  onNewExtensionNode: (world, extension) => createNodeAt(world, 'command', { extension }),
   onSetRunDir: setRunDir,
 })
 const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, start: startFromEntries, stop: stopRunning } })

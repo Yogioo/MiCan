@@ -13,9 +13,9 @@ export function createGraph() {
   return { nodes: [], edges: [] }
 }
 
-export function createNode({ kind = 'text', x = 0, y = 0, w = machine.nodeDefaultW, h = machine.nodeDefaultH, text = '', command = '', cwd = '', file = '', pick = '', schedule = '' } = {}) {
+export function createNode({ kind = 'text', x = 0, y = 0, w = machine.nodeDefaultW, h = machine.nodeDefaultH, text = '', command = '', cwd = '', extension = '', file = '', pick = '', schedule = '' } = {}) {
   const id = newId('n')
-  if (kind === 'command') return { id, kind, x, y, w, h, command, cwd }
+  if (kind === 'command') return { id, kind, x, y, w, h, command, cwd, extension }
   if (kind === 'extract') return { id, kind, x, y, w, h, pick }
   if (kind === 'entry') return { id, kind, x, y, w, h }
   if (kind === 'timer') return { id, kind, x, y, w, h, schedule: schedule || DEFAULT_SCHEDULE }
@@ -28,6 +28,11 @@ export const runnable = (node) => node?.kind === 'command' || node?.kind === 'ex
 
 // 触发节点：入口和定时器。一条链的两个起点 —— 只有执行出边，没有值、没有缓存文件、也没有数据端口。
 export const trigger = (node) => node?.kind === 'entry' || node?.kind === 'timer'
+
+// 这个命令节点的命令从哪来：手写的在节点上，引用扩展的在扩展那份清单里（ADR-0014）。
+// 认「是不是扩展节点」都走这里，别到处摸 node.extension。
+// 它仍然是个命令节点 —— 所以 kind 那一堆分支一个都不用动。
+export const extensionOf = (node) => (node?.kind === 'command' && node.extension ? node.extension : '')
 
 // 文件名的唯一入口：只留一个文件名，补上 .md，其余（路径分隔符、前导点）挡掉。
 export function normalizeFileName(name) {
