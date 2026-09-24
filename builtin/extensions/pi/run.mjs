@@ -83,6 +83,15 @@ function emit(text, at = since()) {
 // line 是「整行的东西」：不在行首就先补一个换行 —— 回话可能正停在一行中间。
 const line = (text = '', at) => emit(`${atLineStart ? '' : '\n'}${text}\n`, at)
 
+// 动作行：一步一行 JSON，不带时间栏（扩展约定，给诊断扩展读；画布显示时藏掉）。
+// 字符串参数截短：write 的整份文件内容进来会把 .log 撑大，诊断只要认得出是哪一步。
+const clipArgs = (args) =>
+  Object.fromEntries(Object.entries(args && typeof args === 'object' ? args : {}).map(([key, value]) => [key, typeof value === 'string' && value.length > 200 ? `${value.slice(0, 200)}…` : value]))
+function act(tool, args) {
+  process.stderr.write(`${atLineStart ? '' : '\n'}${JSON.stringify({ tool, args: clipArgs(args) })}\n`)
+  atLineStart = true
+}
+
 // 转发给 pi 的东西里，哪些词会被它当成**提示词**？跟在开关后面的第一个词算那个开关的值，
 // 剩下的裸词就是漏出来的 —— 它们不报错，只会让 agent 多收到一条独立的消息，所以值得喊一声。
 function straysIn(rest) {
@@ -205,6 +214,7 @@ function trace(event, state) {
       else if (inner.type === 'toolcall_end' && inner.toolCall) {
         state.tools += 1
         line(`→ ${describeCall(inner.toolCall.name, inner.toolCall.arguments)}`)
+        act(inner.toolCall.name, inner.toolCall.arguments)
       } else if (inner.type === 'thinking_end') line(`… 想了想（${(inner.content ?? '').length} 字）${spentOf(state.thinkAt)}`)
       break
     }

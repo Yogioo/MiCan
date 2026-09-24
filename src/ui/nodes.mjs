@@ -22,6 +22,18 @@ function markFileConst(field, check, raw) {
 }
 
 const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
+
+// 扩展约定的动作行：整行是一段带字符串 tool 的 JSON 对象（extensions/README.md「输出的契约」）
+function isActLine(row) {
+  const text = row.trim()
+  if (!text.startsWith('{"tool"')) return false
+  try {
+    return typeof JSON.parse(text).tool === 'string'
+  } catch {
+    return false
+  }
+}
+
 // 脚上的时刻：默认只到分；秒级定时器要看到秒，不然一秒响一次也像什么都没发生
 const clockOf = (ts, withSeconds = false) => new Date(ts).toTimeString().slice(0, withSeconds ? 8 : 5)
 
@@ -274,12 +286,18 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
   function bodyOutput(node, state) {
     if (node.kind === 'extract' || node.kind === 'set') return node.result?.output ?? ''
     const running = state.running.has(node.id)
-    return (running ? node.liveLog : node.result?.log) || (running ? node.live : node.result?.output) || ''
+    return shownLog(node, state) || (running ? node.live : node.result?.output) || ''
   }
 
   // 上面那段是不是诊断流 —— 是就用淡一点的颜色渲染，跟值分开。
-  const showingLog = (node, state) =>
-    node.kind !== 'extract' && node.kind !== 'set' && Boolean(state.running.has(node.id) ? node.liveLog : node.result?.log)
+  const showingLog = (node, state) => node.kind !== 'extract' && node.kind !== 'set' && Boolean(shownLog(node, state))
+
+  // 诊断里给人看的那部分：扩展写的动作行（整行一段带 tool 的 JSON）是给诊断扩展读的，不铺出来。
+  function shownLog(node, state) {
+    const log = (state.running.has(node.id) ? node.liveLog : node.result?.log) ?? ''
+    if (!log.includes('{"tool"')) return log
+    return log.split('\n').filter((row) => !isActLine(row)).join('\n')
+  }
 
   function describeResult(result) {
     if (!result) return ''
