@@ -14,6 +14,7 @@ const NOTES = {
   'ITERATE.md': '改画布、文本节点、扩展时读',
   'CONTEXT.md': '画布用语',
   'extensions/README.md': '写扩展的契约',
+  '.gitignore': '推荐的忽略规则：只忽略缓存目录',
 }
 
 const isFile = async (file) => (await fs.stat(file).catch(() => null))?.isFile() ?? false

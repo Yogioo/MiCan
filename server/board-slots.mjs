@@ -1,4 +1,4 @@
-// 面板属性的值：一份名字对一份 .mican/board/<名字>.md，不进内存当唯一真相。
+// 面板属性的值：一份名字对一份 board/<名字>.md，不进内存当唯一真相。
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { BOARD_DIR, boardFile } from '../src/core/paths.mjs'

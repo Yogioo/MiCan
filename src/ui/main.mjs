@@ -37,7 +37,7 @@ export const state = {
   // 不重号，所以两类混在一处也认得出来，删的时候分开处理就是。
   selection: new Set(),
   workspace: null, // 工作文件夹的绝对路径，未打开时为 null
-  slots: {}, // 面板属性此刻盘上的正文（.mican/board/<名字>.md），不进存档
+  slots: {}, // 面板属性此刻盘上的正文（board/<名字>.md），不进存档
   // 工作文件夹里 extensions/ 扫出来的菜单树（扩展）：{ items, problems }。跟着工作文件夹走，不进存档
   extensions: { items: [], problems: [] },
   // 跟机器走的那些值（命令行、超时、界面手感）不住在这儿：它们住在 core/settings.mjs，现读现用；
@@ -793,7 +793,7 @@ async function openSettings() {
   }
 }
 
-// 面板：声明进存档（不进撤销），值立刻写到 .mican/board/<名字>.md。
+// 面板：声明进存档（不进撤销），值立刻写到 board/<名字>.md。
 function changeBoard(next, disk) {
   applyBoard(next)
   scheduleSave()

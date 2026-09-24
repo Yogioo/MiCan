@@ -2,7 +2,7 @@
 // 后端的读者（打开工作文件夹、运行器、调度器、进化窗口）都从这儿读，之后只认 7 版。
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { CANVAS_FILE, LAYOUT_FILE, RESULTS_FILE } from '../src/core/paths.mjs'
+import { BOARD_DIR, CACHE_DIR, CANVAS_FILE, EVOLVE_CONFIG_FILE, EVOLVE_HISTORY_FILE, LAYOUT_FILE, RESULTS_FILE } from '../src/core/paths.mjs'
 import { FORMAT_VERSION, deserialize, split } from '../src/core/serialize.mjs'
 
 const readJson = async (file) => JSON.parse(await fs.readFile(file, 'utf8'))
@@ -40,6 +40,22 @@ async function migrate(root, data) {
   await writeJson(path.join(root, LAYOUT_FILE), layout)
   await writeJson(path.join(root, CANVAS_FILE), canvas) // 逻辑最后写：它相当于提交
   return canvas
+}
+
+// 以前放在缓存目录里的用户数据搬到顶层，缓存目录才能整个忽略。目标已经在就不动。
+export async function moveOutOfCache(root) {
+  const moves = [
+    [`${CACHE_DIR}/board`, BOARD_DIR],
+    [`${CACHE_DIR}/evolve/config.json`, EVOLVE_CONFIG_FILE],
+    [`${CACHE_DIR}/evolve/history.jsonl`, EVOLVE_HISTORY_FILE],
+  ]
+  for (const [from, to] of moves) {
+    const src = path.join(root, from)
+    const dst = path.join(root, to)
+    if (!(await fs.stat(src).catch(() => null)) || (await fs.stat(dst).catch(() => null))) continue
+    await fs.mkdir(path.dirname(dst), { recursive: true })
+    await fs.rename(src, dst).catch(() => {})
+  }
 }
 
 // 拆开的四份：{ canvas, layout, results, texts }。没有存档是 null；存档解析不了就抛。

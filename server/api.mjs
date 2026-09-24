@@ -3,7 +3,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, LAYOUT_FILE, LOG_EXT, cacheFile, logFile } from '../src/core/paths.mjs'
-import { keepResults, readArchive } from './archive.mjs'
+import { keepResults, moveOutOfCache, readArchive } from './archive.mjs'
 import { shellNames } from './exec.mjs'
 import { importExtension, listLibrary, scanExtensions } from './extensions.mjs'
 import { deleteSlot, readSlots, renameSlot, writeSlot } from './board-slots.mjs'
@@ -105,6 +105,7 @@ export function createApi(initialRoot) {
     const stat = await fs.stat(target).catch(() => null)
     if (!stat?.isDirectory()) throw new Error('文件夹不存在')
     root = target
+    await moveOutOfCache(target).catch(() => {})
     // 旧存档在这儿就地拆开（ADR-0023）；没有存档就是空文件夹，照样能打开
     const archive = await readArchive(target).catch(() => null)
     await scheduler.sync() // 换了一份画布，时刻表跟着换

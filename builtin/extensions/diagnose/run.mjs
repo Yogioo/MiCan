@@ -1,5 +1,5 @@
 // 诊断：把工作文件夹的运行历史压成一段 JSON（见 EXTENSION.md）。
-// 读 .mican/runs.jsonl、另存的 .mican/runs/*.log、.mican/evolve/history.jsonl 和 mican.json，只读不写。
+// 读 .mican/runs.jsonl、另存的 .mican/runs/*.log、evolve/history.jsonl 和 mican.json，只读不写。
 import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -100,7 +100,7 @@ try {
   }
 
   // 分界：最近一次落下了 commit 的进化或撤销；没有就不分
-  const change = readLines(await fs.readFile(path.join(root, '.mican', 'evolve', 'history.jsonl'), 'utf8').catch(() => ''))
+  const change = readLines(await fs.readFile(path.join(root, 'evolve', 'history.jsonl'), 'utf8').catch(() => ''))
     .filter((entry) => entry.commit)
     .at(-1)
 

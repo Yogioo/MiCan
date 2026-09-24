@@ -7,7 +7,7 @@ Status: accepted · 已实现
 
 决定：
 
-- **「改动」指最近一次落下了 commit 的进化或撤销**：从 `.mican/evolve/history.jsonl`（ADR-0024）里取最近一条带 `commit` 的记录，
+- **「改动」指最近一次落下了 commit 的进化或撤销**：从 `evolve/history.jsonl`（ADR-0024）里取最近一条带 `commit` 的记录，
   它的 `at` 是分界。没有记录就不分，输出照旧。用户在画布上的手改不算：它们不 commit，时刻也不可靠。
 - **诊断输出多一个 `change`**：`{"at":…,"commit":"e4f5a6b","by":"streak"}`。
 - **每个节点多一个 `since`**：分界之后的 `runs` / `failed` / `stuck` / `avgActs`，算法跟全量那份一样。

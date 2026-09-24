@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { dataInto, findNode } from '../src/core/graph.mjs'
-import { CACHE_DIR, CANVAS_FILE, DOCS_DIR, LAYOUT_FILE, RUNS_FILE } from '../src/core/paths.mjs'
+import { CACHE_DIR, CANVAS_FILE, DOCS_DIR, EVOLVE_CONFIG_FILE as CONFIG_FILE, EVOLVE_DIR, EVOLVE_HISTORY_FILE as HISTORY_FILE, EVOLVE_LOG_DIR, LAYOUT_FILE, RUNS_FILE } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { nextFireAt, parseSchedule } from '../src/core/schedule.mjs'
 import { FORMAT_VERSION, deserialize } from '../src/core/serialize.mjs'
@@ -17,11 +17,8 @@ import { EXT_DIR, LIBRARY_ROOT, commandOf } from './extensions.mjs'
 
 // 快照、回滚、commit 都只圈这几处，.mican/ 里的运行产物不跟着卷。
 // pi 只改三层（ITERATE.md）；布局也圈进来，回滚、撤销时用户摆的位置跟着节点一起回来（ADR-0023）。
+// 进化的配置和记录不在 pi 能改的三层里：放 mican.json 它就能把自己的触发条件改掉
 const LAYERS = [CANVAS_FILE, LAYOUT_FILE, DOCS_DIR, EXT_DIR]
-const EVOLVE_DIR = `${CACHE_DIR}/evolve`
-// 配置和记录跟工作文件夹走，但不在 pi 能改的三层里：放 mican.json 它就能把自己的触发条件改掉
-const CONFIG_FILE = `${EVOLVE_DIR}/config.json`
-const HISTORY_FILE = `${EVOLVE_DIR}/history.jsonl`
 // 校验不过，把原因交回 pi 再改：总共最多几次
 const MAX_TRIES = 3
 // 提示词里给 pi 看的最近 commit 条数
@@ -211,7 +208,7 @@ function promptOf({ hint, diagnosis, recent, failure }) {
     '```',
     '',
     '## 规矩',
-    `- 只改 ${CANVAS_FILE}、${DOCS_DIR}/、${EXT_DIR}/ 三处，别碰 ${LAYOUT_FILE} 和 ${CACHE_DIR}/。`,
+    `- 只改 ${CANVAS_FILE}、${DOCS_DIR}/、${EXT_DIR}/ 三处，别碰 ${LAYOUT_FILE}、${EVOLVE_DIR}/ 和 ${CACHE_DIR}/。`,
     `- 文本节点的正文只在 ${DOCS_DIR}/ 里那份 md。`,
     '- 方向是把 agent 每次都在重复做的动作收进脚本（新写一个扩展接进链），并从提示词里删掉让 agent 自己去做的那几句；agent 只留真要判断的那一步。',
     `- 节点靠 name 找，边写的是 id。新节点给一个画布内唯一的 name，id 别跟已有的重。`,
@@ -319,7 +316,7 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
     const at = Date.now()
     current = { startedAt: at, phase: '' }
     log = { id: at, text: '' }
-    const dir = path.join(root, EVOLVE_DIR)
+    const dir = path.join(root, EVOLVE_LOG_DIR)
     const ctx = {
       root,
       at,
@@ -346,6 +343,7 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
         if (result.target) entry.target = result.target
         if (result.stuck) entry.stuck = true
         Object.assign(entry, { message: result.message, log: `${at}.log` })
+        await fs.mkdir(path.join(root, EVOLVE_DIR), { recursive: true }).catch(() => {})
         await fs.appendFile(path.join(root, HISTORY_FILE), `${JSON.stringify(entry)}\n`, 'utf8').catch(() => {})
         last = { at: Date.now(), ...result }
         current = null
@@ -511,7 +509,7 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
     const entry = (await readHistory(root)).find((item) => item.at === Number(at))
     if (!entry) throw new Error('没有这条进化记录')
     const show = entry.commit ? (await git(root, ['show', '--stat', '--format=%B', entry.commit])).out : ''
-    const text = entry.log ? await fs.readFile(path.join(root, EVOLVE_DIR, path.basename(entry.log)), 'utf8').catch(() => '') : ''
+    const text = entry.log ? await fs.readFile(path.join(root, EVOLVE_LOG_DIR, path.basename(entry.log)), 'utf8').catch(() => '') : ''
     return { entry, show, log: text }
   }
 

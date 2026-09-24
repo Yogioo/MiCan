@@ -1,4 +1,4 @@
-// 左侧面板：这份画布的属性表。名字进存档，值在 .mican/board/<名字>.md。
+// 左侧面板：这份画布的属性表。名字进存档，值在 board/<名字>.md。
 // 行可以拖到画布上落获取节点；边上那个「写」拖出去是写入节点。
 import { board } from '../core/settings.mjs'
 import { toWorld } from '../core/view.mjs'

@@ -16,10 +16,15 @@ export const cacheFile = (id) => `${CACHE_DIR}/${id}${CACHE_EXT}`
 export const logFile = (id) => `${CACHE_DIR}/${id}${LOG_EXT}`
 // 出口的边车：挨着缓存文件，一份对一个出口。节点的值仍是那份 .out。
 export const portFile = (id, port) => `${CACHE_DIR}/${id}.${String(port).replace(/[\\/]/g, '_')}${CACHE_EXT}`
-// 面板属性的值：一份对一个名字，跟节点缓存分开，换工作文件夹也在。
-export const BOARD_DIR = `${CACHE_DIR}/board`
+// 面板属性的值：一份对一个名字。是用户的数据，不在缓存目录里（缓存目录可以整个忽略）。
+export const BOARD_DIR = 'board'
 export const boardFile = (name) => `${BOARD_DIR}/${String(name).replace(/[\\/]/g, '_')}.md`
 // 运行历史：一行一次运行，只追加。每次的 .log 另存进 runs/，按节点只留最近几份。
 export const RUNS_FILE = `${CACHE_DIR}/runs.jsonl`
 export const RUNS_DIR = `${CACHE_DIR}/runs`
 export const runLogName = (at, id) => `${at}-${id}${LOG_EXT}`
+// 进化的配置和记录：跟工作文件夹走，不在缓存目录里。每次的提示词和过程是运行产物，留在缓存目录。
+export const EVOLVE_DIR = 'evolve'
+export const EVOLVE_CONFIG_FILE = `${EVOLVE_DIR}/config.json`
+export const EVOLVE_HISTORY_FILE = `${EVOLVE_DIR}/history.jsonl`
+export const EVOLVE_LOG_DIR = `${CACHE_DIR}/evolve`
