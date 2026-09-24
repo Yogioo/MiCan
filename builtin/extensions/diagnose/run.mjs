@@ -1,5 +1,5 @@
 // 诊断：把工作文件夹的运行历史压成一段 JSON（见 EXTENSION.md）。
-// 读 .mican/runs.jsonl、另存的 .mican/runs/*.log 和 mican.json，只读不写。
+// 读 .mican/runs.jsonl、另存的 .mican/runs/*.log、.mican/evolve/history.jsonl 和 mican.json，只读不写。
 import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -49,6 +49,13 @@ function actsOf(log) {
   return acts
 }
 
+// 这些运行里平均每次多少步动作；一次都没读到动作就没有
+function avgActsOf(entries, actsAt) {
+  const lists = entries.filter((entry) => actsAt.has(entry)).map((entry) => actsAt.get(entry))
+  if (!lists.length) return undefined
+  return Math.round((lists.reduce((sum, list) => sum + list.length, 0) / lists.length) * 10) / 10
+}
+
 // 多次运行里都出现的那串连续动作：在至少一半（且不少于 2 次）的运行里出现，只留最长的几串。
 function repeatsOf(runs) {
   if (runs.length < 2) return []
@@ -92,8 +99,14 @@ try {
     byNode.get(entry.node).push(entry)
   }
 
+  // 分界：最近一次落下了 commit 的进化或撤销；没有就不分
+  const change = readLines(await fs.readFile(path.join(root, '.mican', 'evolve', 'history.jsonl'), 'utf8').catch(() => ''))
+    .filter((entry) => entry.commit)
+    .at(-1)
+
   const nodes = []
   const repeats = []
+  const worse = []
   for (const [id, entries] of byNode) {
     const node = nodesById.get(id)
     const failed = entries.filter((entry) => entry.failed).length
@@ -103,24 +116,43 @@ try {
     for (const entry of entries) if (entry.route !== undefined) routes[entry.route] = (routes[entry.route] ?? 0) + 1
     // 跑链时没往下走、也没失败，而它明明有执行出边：值没对上任何一根边的标签
     const hasOut = execEdges.some((edge) => edge.from === id)
-    const stuck = entries.filter((entry) => entry.chain !== id && !entry.failed && entry.route === undefined && hasOut).length
-    const acts = []
+    const stuckAt = new Set(entries.filter((entry) => entry.chain !== id && !entry.failed && entry.route === undefined && hasOut))
+    const actsAt = new Map()
     for (const entry of entries) {
       if (!entry.log) continue
       const log = await fs.readFile(path.join(root, '.mican', 'runs', entry.log), 'utf8').catch(() => null)
-      if (log !== null) acts.push(actsOf(log))
+      if (log !== null) actsAt.set(entry, actsOf(log))
     }
+    const acts = [...actsAt.values()]
     const item = {
       node: id,
       what: node ? clip(node.extension || node.command || node.kind || '', 60) : '（已不在画布上）',
       runs: entries.length,
       failed,
       streak,
-      stuck,
+      stuck: stuckAt.size,
       avgMs: Math.round(entries.reduce((sum, entry) => sum + (entry.ms ?? 0), 0) / entries.length),
       routes,
     }
-    if (acts.length) item.avgActs = Math.round((acts.reduce((sum, list) => sum + list.length, 0) / acts.length) * 10) / 10
+    const avgActs = avgActsOf(entries, actsAt)
+    if (avgActs !== undefined) item.avgActs = avgActs
+    if (change) {
+      const after = entries.filter((entry) => entry.at > change.at)
+      const before = entries.filter((entry) => entry.at <= change.at)
+      if (after.length) {
+        const bad = (list) => list.filter((entry) => entry.failed || stuckAt.has(entry)).length
+        item.since = { runs: after.length, failed: after.filter((entry) => entry.failed).length, stuck: after.filter((entry) => stuckAt.has(entry)).length }
+        const sinceActs = avgActsOf(after, actsAt)
+        if (sinceActs !== undefined) item.since.avgActs = sinceActs
+        // 改动之后至少 3 次，坏的占比比之前高出一半以上；之前全好就看之后是否过半。之前没跑过的（新加的）不标
+        const rateAfter = bad(after) / after.length
+        const rateBefore = before.length ? bad(before) / before.length : null
+        if (after.length >= 3 && rateBefore !== null && (rateBefore === 0 ? rateAfter > 0.5 : rateAfter >= rateBefore * 1.5)) {
+          item.worse = true
+          worse.push(`${id} 在 ${change.commit} 之后败或停住 ${bad(after)}/${after.length}（之前 ${bad(before)}/${before.length}）`)
+        }
+      }
+    }
     nodes.push(item)
     for (const found of repeatsOf(acts)) repeats.push({ node: id, calls: found.calls, runs: found.count, of: acts.length })
   }
@@ -135,7 +167,9 @@ try {
 
   const day = (at) => new Date(at).toISOString().slice(0, 10)
   const text = [
+    ...worse,
     `共 ${history.length} 次运行（${day(history[0].at)} ~ ${day(history[history.length - 1].at)}）`,
+    ...(change ? [`上次改动：${change.commit}（${new Date(change.at).toISOString().slice(0, 16).replace('T', ' ')}）`] : []),
     ...nodes.map((item) => {
       const parts = [`${item.runs} 次`, `败 ${item.failed}`]
       if (item.streak) parts.push(`眼下连败 ${item.streak}`)
@@ -150,7 +184,9 @@ try {
     ...repeats.map((item) => `${item.node} 在 ${item.runs}/${item.of} 次里都做了：${item.calls.join(' → ')}`),
   ].join('\n')
 
-  say({ ok: true, runs: history.length, nodes, unusedEdges, repeats, text })
+  const result = { ok: true, runs: history.length }
+  if (change) result.change = { at: change.at, commit: change.commit, by: change.by }
+  say({ ...result, nodes, unusedEdges, repeats, text })
 } catch (error) {
   process.stderr.write(`✗ ${error.message}\n`)
   say({ ok: false, reason: error.message })

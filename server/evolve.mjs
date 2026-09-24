@@ -195,6 +195,9 @@ function promptOf({ hint, diagnosis, recent, failure }) {
     '',
     '## 运行历史的诊断',
     diagnosis ? text : '还没有运行历史。',
+    ...(facts.nodes?.some((item) => item.worse)
+      ? ['', '标了 worse 的节点是上次改动之后才变差的，先看上次改的是不是原因，是就改回来。']
+      : []),
     ...(diagnosis ? ['', '```json', JSON.stringify(facts, null, 2), '```'] : []),
     '',
     '## 最近的改动',
