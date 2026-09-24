@@ -10,8 +10,10 @@ const clip = (text, size) => (text.length > size ? `${text.slice(0, size)}…` :
 const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
 const edgeText = (edge) => `${edge.from} -[${edge.label || '兜底'}]-> ${edge.to}`
 
-// 工作文件夹：从本文件往上找 mican.json。扩展总住在某个工作文件夹的 extensions/ 底下。
+// 工作文件夹：给了 --root 就是它（进化面板从内置库直接调）；否则从本文件往上找 mican.json。
 function findWorkspace() {
+  const at = process.argv.indexOf('--root')
+  if (at >= 0) return existsSync(path.join(process.argv[at + 1] ?? '', 'mican.json')) ? path.resolve(process.argv[at + 1]) : ''
   let dir = path.dirname(fileURLToPath(import.meta.url))
   for (;;) {
     if (existsSync(path.join(dir, 'mican.json'))) return dir

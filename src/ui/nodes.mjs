@@ -24,7 +24,7 @@ function markFileConst(field, check, raw) {
 const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
 
 // 扩展约定的动作行：整行是一段带字符串 tool 的 JSON 对象（extensions/README.md「输出的契约」）
-function isActLine(row) {
+export function isActLine(row) {
   const text = row.trim()
   if (!text.startsWith('{"tool"')) return false
   try {
@@ -65,6 +65,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       el.style.width = `${node.w}px`
       el.style.height = `${node.h}px`
       el.classList.toggle('selected', state.selection.has(node.id))
+      el.classList.toggle('evolved', state.evolved.has(node.id))
       // 编辑中的节点正文归输入框管，这里不碰
       if (node.kind === 'text') renderText(el, node)
       else if (node.kind === 'extract') renderExtract(el, node, state)

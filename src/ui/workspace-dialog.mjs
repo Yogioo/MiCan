@@ -268,3 +268,18 @@ export function askRunDir({ initial = '', hint = '', quick = [], placeholder = '
   if (initial) input.select()
   return modal.promise
 }
+
+// 立即进化：可以附一段进化提示词（遇到的问题），空着就只照诊断改。取消返回 null。
+export function askEvolveHint() {
+  const modal = openModal({ title: '立即进化', okText: '开始进化' })
+  const label = document.createElement('div')
+  label.className = 'modal-label'
+  label.textContent = '遇到的问题（如「提取老漏掉附件」）；空着就只照运行历史的诊断改。进化期间画布只读，在跑的链会停下'
+  const input = document.createElement('textarea')
+  input.className = 'evolve-hint'
+  input.spellcheck = false
+  modal.body.append(label, input)
+  modal.ok.addEventListener('click', () => modal.finish(input.value.trim()))
+  input.focus()
+  return modal.promise
+}

@@ -12,7 +12,7 @@ import { deserialize } from '../src/core/serialize.mjs'
 const KEEP_HITS = 50
 const MAX_DELAY_MS = 2 ** 31 - 1 // setTimeout 的上限；比这更远就先不排，下次 sync 再算
 
-export function createScheduler({ getRoot, runChain, isRunning }) {
+export function createScheduler({ getRoot, runChain, isRunning, isPaused = () => false }) {
   const arming = new Map() // timerId -> { key, handle }
   const hits = []
   let seq = 0
@@ -25,6 +25,8 @@ export function createScheduler({ getRoot, runChain, isRunning }) {
 
   // 到点了：这条链还在跑就跳过这一次（只看链身，别的链照跑），否则让运行器从定时器出发走一整条链。
   async function fire(timerId, headId) {
+    // 进化正在改存档：不写回，只在内存里记一笔
+    if (isPaused()) return record(timerId, 'skipped', '上次跳过了（正在进化）')
     if (isRunning(headId)) {
       record(timerId, 'skipped', '上次跳过了（上一条还在跑）')
       return writeBack(timerId, { at: Date.now(), skipped: true, note: '上次跳过了（上一条还在跑）' })

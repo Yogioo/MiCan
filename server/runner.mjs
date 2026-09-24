@@ -36,7 +36,7 @@ function locateTypedFile(file, workspace, cwd) {
   return ''
 }
 
-export function createRunner({ getRoot, resolveCwd, readSettings }) {
+export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () => '' }) {
   const runs = new Map()
   let seq = 0
   const nextId = () => `r${Date.now().toString(36)}${(seq += 1).toString(36)}`
@@ -396,6 +396,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
   async function start({ id, mode = 'node', trigger = 'manual' }) {
     const root = getRoot()
     if (!root) throw new Error('先打开一个工作文件夹，命令才有地方跑')
+    if (blocked()) throw new Error(blocked())
     if (owns(id)) throw new Error('这个节点还在跑，等它结束')
     const { graph, board } = await loadGraph(root)
     const node = findNode(graph, id)
@@ -476,5 +477,15 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
   // 人手从入口跑同一条链时定时器也看得见 —— 它们指的是同一个起步节点，本来就是同一条链。
   const isRunning = (headId) => [...runs.values()].some((run) => run.active && run.headId === headId)
 
-  return { start, stop, list, attach, owns, ownsFile, isRunning, has: (runId) => runs.has(runId) }
+  // 全停下，等每一条都真的收了尾（结果写完）才返回
+  async function stopAll() {
+    for (const run of runs.values()) {
+      if (!run.active) continue
+      run.stopped = true
+      run.current?.child?.stop()
+    }
+    while ([...runs.values()].some((run) => run.active)) await new Promise((done) => setTimeout(done, 100))
+  }
+
+  return { start, stop, stopAll, list, attach, owns, ownsFile, isRunning, has: (runId) => runs.has(runId) }
 }

@@ -123,6 +123,7 @@ export async function commandOf(root, rel) {
   // defaults / outputs / route 一并交回去：输入兜底、出口与选路都现读清单（ADR-0015 / ADR-0017）
   return {
     command: `node "${entry}"${args ? ` ${args}` : ''}`,
+    entry,
     name: meta.name,
     defaults: meta.defaults,
     outputs: meta.outputs,

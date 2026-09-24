@@ -11,7 +11,7 @@ routes: true, false
 
 读工作文件夹的 `.mican/runs.jsonl`、另存的 `.mican/runs/*.log` 和 `mican.json`，只读不写。
 工作文件夹是从 `run.mjs` 往上找到的第一个有 `mican.json` 的目录，跟节点的运行目录无关。
-不需要参数。
+不需要参数；进化面板从内置库直接调它时带 `--root <工作文件夹>`。
 
 ## 拿到什么
 

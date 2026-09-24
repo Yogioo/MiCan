@@ -1,4 +1,4 @@
-// 工具条：落盘状态、另存为、打开、设置、回 100%、工作文件夹、当前缩放比。
+// 工具条：落盘状态、另存为、打开、设置、立即进化、回 100%、工作文件夹、当前缩放比。
 // 还有右下角那两个：待命时露开始（从入口跑链），跑起来换成停止。它们不占工具条的地方。
 // 没有「保存」按钮：改动一结束就落盘了（ADR-0003），那个点只表示「有写还在路上」。
 import { canvas, machine } from '../core/settings.mjs'
@@ -11,7 +11,9 @@ export function mountToolbar({ getState, actions }) {
   const settings = document.getElementById('btn-settings')
   const start = document.getElementById('btn-start')
   const stop = document.getElementById('btn-stop')
+  const evolve = document.getElementById('btn-evolve')
 
+  evolve.addEventListener('click', actions.evolve)
   document.getElementById('btn-save-as').addEventListener('click', actions.saveAs)
   document.getElementById('btn-open').addEventListener('click', actions.openWorkspace)
   settings.addEventListener('click', actions.openSettings)
@@ -27,6 +29,11 @@ export function mountToolbar({ getState, actions }) {
     const idle = !state.running.size && !state.runs.size
     start.hidden = !idle
     stop.hidden = idle
+    const evolving = state.evolve?.active
+    start.disabled = Boolean(evolving)
+    evolve.disabled = Boolean(evolving) || !state.workspace
+    evolve.textContent = evolving ? `进化中：${state.evolve.phase || '…'}` : '立即进化'
+    document.body.classList.toggle('evolving', Boolean(evolving))
     dot.classList.toggle('saving', state.saving)
     dot.title = state.saving ? '正在落盘…' : '改动即落盘'
     zoom.textContent = `${Math.round(state.view.scale * 100)}%`

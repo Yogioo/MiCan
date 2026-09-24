@@ -17,6 +17,8 @@ export const MACHINE_FIELDS = [
   { group: '命令', key: 'timeout', label: '单个命令最多跑多久', kind: 'int', unit: '秒', def: 7200, min: 1, max: 86400, hint: '超时就掐掉这个节点' },
   { group: '命令', key: 'outputLimitKb', label: '单个命令的输出上限', kind: 'int', unit: 'KB', def: 1024, min: 1, max: 65536, hint: '超过就截断，并在节点上标「输出被截断」' },
   { group: '命令', key: 'runLogKeep', label: '每个节点留几次诊断', kind: 'int', unit: '次', def: 20, min: 1, max: 1000, hint: '每次运行的 .log 另存进 .mican/runs/，超出的删掉最旧的', ...ADV },
+  { group: '进化', key: 'evolveProvider', label: '进化用的提供商', kind: 'text', def: '', hint: '交给 pi 的 --provider，如 openai；空着让 pi 自己选' },
+  { group: '进化', key: 'evolveModel', label: '进化用的模型', kind: 'text', def: '', hint: '交给 pi 的 --model；空着让 pi 自己选' },
   { group: '打开', key: 'openWorkspace', label: '启动时打开的工作文件夹', kind: 'path', def: '', tier: 'hidden', hint: '在「打开」弹窗里勾选，不在这儿改' },
   { group: '界面', key: 'nodeDefaultW', label: '新建节点的宽', kind: 'int', unit: 'px', def: 320, min: 80, max: 2000, hint: '双击空白处新建的文本节点也按这个尺寸' },
   { group: '界面', key: 'nodeDefaultH', label: '新建节点的高', kind: 'int', unit: 'px', def: 200, min: 60, max: 2000 },

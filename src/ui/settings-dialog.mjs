@@ -38,9 +38,9 @@ function fieldRow(modal, field, value) {
   } else {
     const input = document.createElement('input')
     input.className = 'modal-path'
-    input.type = field.kind === 'path' ? 'text' : 'number'
+    input.type = field.kind === 'path' || field.kind === 'text' ? 'text' : 'number'
     input.spellcheck = false
-    if (field.kind !== 'path') {
+    if (input.type === 'number') {
       input.min = String(field.min)
       input.max = String(field.max)
       input.step = field.kind === 'number' ? 'any' : '1'

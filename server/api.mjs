@@ -6,6 +6,7 @@ import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, LOG_EXT, cacheFile, logFil
 import { shellNames } from './exec.mjs'
 import { importExtension, listLibrary, scanExtensions } from './extensions.mjs'
 import { deleteSlot, readSlots, renameSlot, writeSlot } from './board-slots.mjs'
+import { createEvolver } from './evolve.mjs'
 import { createRunner } from './runner.mjs'
 import { createScheduler } from './scheduler.mjs'
 import { importAgentDoc, listAgentDocs, seedAgentDocs } from './workspace-docs.mjs'
@@ -32,15 +33,19 @@ const IS_WINDOWS = process.platform === 'win32'
 export function createApi(initialRoot) {
   let root = initialRoot ? path.resolve(initialRoot) : null
 
+  // 进化期间（ADR-0022）：不起新的运行、定时器跳过、前端落盘不收
+  const evolving = () => evolver.active()
   // 跑链的人：它读盘上的画布、自己走图、自己把结果写盘。它占着哪个文件，下面的 save 就跳过哪个。
-  const runner = createRunner({ getRoot: () => root, resolveCwd, readSettings })
+  const runner = createRunner({ getRoot: () => root, resolveCwd, readSettings, blocked: () => (evolving() ? '正在进化，等它做完再跑' : '') })
   // 定时器：后端自己看着时刻表，到点让运行器从定时器出发跑链（ADR-0005）。
   // 时刻表在盘上的 mican.json 里，所以每次落盘与每次换工作文件夹之后重新装一次。
   const scheduler = createScheduler({
     getRoot: () => root,
     runChain: (timerId) => runner.start({ id: timerId, mode: 'chain', trigger: 'timer' }),
     isRunning: (headId) => runner.isRunning(headId),
+    isPaused: evolving,
   })
+  const evolver = createEvolver({ getRoot: () => root, readSettings, stopRuns: () => runner.stopAll(), afterward: () => scheduler.sync() })
   // 起来的时候盘上可能已经有一份画布（环境变量指的文件夹）：先把时刻表装上。
   // 不然要等第一次落盘或打开文件夹，定时器才会开始响 —— 在那之前界面看上去是死的。
   if (root) scheduler.sync()
@@ -70,6 +75,7 @@ export function createApi(initialRoot) {
 
   async function setWorkspace(dir, mode) {
     const target = path.resolve(dir)
+    if (evolving() && (mode === 'create' || target !== root)) throw new Error('正在进化，等它做完再换文件夹')
     if (mode === 'create') {
       await fs.mkdir(target, { recursive: true })
       if ((await fs.readdir(target)).length > 0) throw new Error('目标文件夹不为空')
@@ -137,10 +143,26 @@ export function createApi(initialRoot) {
     }
   }
 
+  // 进化中盘上的画布：pi 改的是 md，所以文本节点的正文按 md 给。正写到一半解析不了就给 null。
+  async function liveCanvas() {
+    const canvas = await lastCanvas()
+    if (!Array.isArray(canvas?.nodes)) return null
+    for (const node of canvas.nodes) {
+      if (node?.kind !== 'text' || typeof node.file !== 'string') continue
+      let text = null
+      try {
+        text = await fs.readFile(inside(node.file), 'utf8')
+      } catch {}
+      if (text !== null) node.text = text
+    }
+    return canvas
+  }
+
   // 前端把内存镜像整包推过来（ADR-0003）。跑链期间不然：运行器正在写的那些文件它不碰，
   // 否则会把它刚写下的盖回旧的（ADR-0009）。名单是「此刻」的，所以逐项现问，别提前算。
   async function save({ canvas, docs = [], cache = [], logs = [] }) {
     if (!root) throw new Error('还没有工作文件夹')
+    if (evolving()) throw new Error('正在进化，画布暂时只读')
     const previous = await lastCanvas()
     docs = docs.filter((doc) => !runner.ownsFile(doc.file))
     cache = cache.filter((item) => !runner.owns(item.id))
@@ -365,7 +387,14 @@ export function createApi(initialRoot) {
         }
         throw new Error('不认识的面板动作')
       }
-      if (route === '/api/runs') return send(res, 200, { items: runner.list(), triggers: scheduler.triggers() })
+      if (route === '/api/runs') return send(res, 200, { items: runner.list(), triggers: scheduler.triggers(), evolve: evolver.status() })
+      if (route === '/api/evolve') return send(res, 200, await evolver.start({ hint: body.hint }))
+      // 进化窗口：状态、新增的那段过程、盘上此刻的画布（pi 边改边看）
+      if (route === '/api/evolve/watch') {
+        const status = evolver.status()
+        const log = evolver.readLog(body.id, Number(body.from) || 0)
+        return send(res, 200, { status, log, canvas: root ? await liveCanvas() : null })
+      }
       if (route === '/api/run') return send(res, 200, await runner.start({ id: body.id, mode: body.mode }))
       if (route.startsWith('/api/run/') && route.endsWith('/stop')) {
         return send(res, 200, runner.stop(route.slice('/api/run/'.length, -'/stop'.length)))

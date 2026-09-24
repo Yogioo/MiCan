@@ -22,10 +22,11 @@ import { createView, zoomAt } from '../core/view.mjs'
 import { mountBoard } from './board.mjs'
 import { mountCanvas } from './canvas.mjs'
 import { mountEdges } from './edges.mjs'
+import { mountEvolveWindow } from './evolve-window.mjs'
 import { mountNodes } from './nodes.mjs'
 import { askSettings } from './settings-dialog.mjs'
 import { mountToolbar } from './toolbar.mjs'
-import { askRunDir, askWorkspace } from './workspace-dialog.mjs'
+import { askEvolveHint, askRunDir, askWorkspace } from './workspace-dialog.mjs'
 
 export const state = {
   view: createView(),
@@ -44,6 +45,8 @@ export const state = {
   // 它不由某个进程代表（两步之间的空档也在跑），所以右下角那个停止按钮看的是这张表。
   runs: new Map(),
   saving: false, // 有一次落盘还在路上
+  evolve: null, // 后端的进化状态 { active, phase, last }，轮询带回来
+  evolved: new Set(), // 这次进化改过的节点：画布上标出来，关掉进化窗口才收
   message: '',
 }
 
@@ -162,8 +165,9 @@ function payload() {
   return { canvas: serialize(state), docs, cache, logs }
 }
 
+// 进化期间后端不收落盘：做完会从盘上重开
 function scheduleSave() {
-  if (!state.workspace) return
+  if (!state.workspace || state.evolve?.active) return
   clearTimeout(scheduled)
   scheduled = setTimeout(saveNow, machine.autosaveMs)
 }
@@ -172,7 +176,7 @@ function scheduleSave() {
 function saveNow() {
   clearTimeout(scheduled)
   scheduled = null
-  if (!state.workspace) return Promise.resolve()
+  if (!state.workspace || state.evolve?.active) return Promise.resolve()
   const body = payload() // 先取一份：排进队列之后状态再变，也不影响这一次写的内容
   inFlight += 1
   state.saving = true
@@ -337,6 +341,7 @@ async function openStartupWorkspace() {
 // ---- 节点 ----
 
 function createNodeAt(world, kind, extra = {}) {
+  if (state.evolve?.active) return // 进化期间画布只读
   const compact = kind === 'get' || kind === 'set'
   const w = compact ? 200 : machine.nodeDefaultW
   const h = kind === 'get' ? CMD_BAR_H : compact ? 88 : machine.nodeDefaultH
@@ -514,6 +519,106 @@ async function pollRuns() {
     triggerSeq = hit.seq
     if (hit.at >= openedAt) applyTrigger(hit) // 打开页面之前的那几笔已经在存档里了
   }
+  // 页面是进化中途打开的：接上进化窗口
+  if (answer.evolve?.active) watchEvolve(answer.evolve)
+}
+
+// ---- 进化 ----
+
+async function startEvolve() {
+  if (!state.workspace || state.evolve?.active) return
+  const hint = await askEvolveHint()
+  if (hint === null) return
+  await flush() // 诊断和 pi 读的是盘上那份
+  try {
+    watchEvolve(await api('/api/evolve', { hint }))
+  } catch (error) {
+    showMessage(error.message)
+  }
+}
+
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
+const EVOLVE_POLL_MS = 1000
+let watching = false
+let evolveLog = { id: 0, size: 0 } // 进化窗口已经铺到这次过程的第几个字
+let baseline = new Map() // 进化开始时每个节点的样子，拿来标「进化改过」
+let liveKey = ''
+
+const nodeKeys = (graph) => new Map(serialize({ view: state.view, graph }).nodes.map((node) => [node.id, JSON.stringify(node)]))
+
+// 进化期间每秒问一次：新增的过程铺进窗口，盘上的画布变了就原地换上。做完从盘上重开。
+async function watchEvolve(status) {
+  if (watching) return
+  watching = true
+  state.evolve = status
+  baseline = nodeKeys(state.graph)
+  liveKey = ''
+  state.evolved = new Set()
+  evolveWindow.open()
+  notify()
+  for (;;) {
+    let answer
+    try {
+      answer = await api('/api/evolve/watch', { id: evolveLog.id, from: evolveLog.size })
+    } catch {
+      await sleep(EVOLVE_POLL_MS)
+      continue
+    }
+    // 换了一次进化：后端给的是整段，窗口从头铺
+    if (answer.status.logId !== evolveLog.id) {
+      evolveWindow.reset()
+      evolveLog = { id: answer.status.logId, size: 0 }
+    }
+    evolveWindow.append(answer.log)
+    evolveLog.size += answer.log.length
+    state.evolve = answer.status
+    if (answer.canvas) showLiveCanvas(answer.canvas)
+    notify()
+    if (!answer.status.active) break
+    await sleep(EVOLVE_POLL_MS)
+  }
+  watching = false
+  await afterEvolve()
+}
+
+// pi 改到一半的画布：只拿来看，不进撤销、不落盘。运行结果按 id 接回来。
+function showLiveCanvas(canvas) {
+  const key = JSON.stringify([canvas.nodes, canvas.edges])
+  if (key === liveKey) return
+  liveKey = key
+  let restored
+  try {
+    restored = deserialize(canvas)
+  } catch {
+    return // 结构还没改完整，等下一次
+  }
+  const kept = new Map(state.graph.nodes.map((node) => [node.id, node.result]))
+  for (const node of restored.graph.nodes) {
+    if ((runnable(node) || node.kind === 'timer') && kept.get(node.id)) node.result = kept.get(node.id)
+  }
+  state.evolved = new Set([...nodeKeys(restored.graph)].filter(([id, key]) => baseline.get(id) !== key).map(([id]) => id))
+  state.graph = restored.graph
+  state.selection = new Set()
+  loadExtensions() // pi 可能刚写了一个新扩展，端口要照它的清单画
+}
+
+function closeEvolveWindow() {
+  state.evolved = new Set()
+  notify()
+}
+
+// pi 改的是盘上的文件：从盘上重开，撤销栈也清掉（它记的是改之前的图）
+async function afterEvolve() {
+  try {
+    await loadWorkspace(state.workspace)
+    resetHistory()
+    state.evolved = new Set([...nodeKeys(state.graph)].filter(([id, key]) => baseline.get(id) !== key).map(([id]) => id))
+    notify()
+  } catch (error) {
+    showMessage(`进化完了，但重开工作文件夹失败：${error.message}`)
+    return
+  }
+  showMessage(state.evolve?.last?.message ?? '进化结束')
 }
 
 // 定时器的一次触发（含跳过）落在定时器节点上：上次什么时候响的、是跑了还是跳了。
@@ -763,6 +868,7 @@ function redo() {
 
 window.addEventListener('keydown', (event) => {
   if (document.activeElement !== document.body) return // 编辑态不抢键
+  if (state.evolve?.active) return // 进化期间画布只读
   const mod = event.ctrlKey || event.metaKey
   if (mod && event.key.toLowerCase() === 'z') {
     event.preventDefault()
@@ -841,7 +947,8 @@ const nodes = mountNodes({
   onNewExtensionNode: (world, extension) => createNodeAt(world, 'command', { extension }),
   onSetRunDir: setRunDir,
 })
-const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, start: startFromEntries, stop: stopRunning } })
+const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, evolve: startEvolve, start: startFromEntries, stop: stopRunning } })
+const evolveWindow = mountEvolveWindow({ onClose: closeEvolveWindow })
 const boardPanel = mountBoard({
   getState: () => state,
   onChange: changeBoard,
@@ -863,3 +970,4 @@ subscribe(edges.render)
 subscribe(nodes.render)
 subscribe(toolbar.render)
 subscribe(boardPanel.render)
+subscribe(evolveWindow.render)
