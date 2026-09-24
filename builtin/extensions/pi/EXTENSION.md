@@ -11,9 +11,8 @@ defaults:
   工具: 空
   添加系统提示词: 空
 outputs:
-  选路: json:ok
   text: json:text
-route: 选路
+route: json:ok
 routes: true, false
 ---
 
@@ -31,7 +30,6 @@ routes: true, false
 | 模型 | 框里只填值，如 sonnet。常和提供商一起填 |
 | 工具 | 整串开关，如 `--tools read,bash` 或 `--no-tools`。写「空」用默认 |
 | 添加系统提示词 | 多行走文本节点；短的也可写在框里。写「空」不追加 |
-| 选路 | 做成了是 true，业务空转是 false。执行边上写这两个词 |
 | text | pi 的回话，可以有换行 |
 
 ## 怎么接
@@ -148,7 +146,7 @@ stdout 永远是**一段合法 JSON**：
     {"ok":true,"text":"pi 的回话"}
     {"ok":false,"reason":"一句话说明哪里不对"}
 
-清单声明了两个出口：`选路`、`text`，选路看 `选路`（取法仍是 `json:ok`）。执行边上写 `true` / `false`，节点执行口上也能看见这两个词。
+清单只声明了一个出口 `text`；选路直接取 `json:ok`，不长数据口。做成了是 `true`，业务空转是 `false`，执行边上写这两个词，节点执行口上也能看见。
 `text` 里可以有换行；从 `text` 那个出口拉到下游文本节点，或用 `[[ ]]` 拿边车路径。
 没写出口名的数据边仍送整份 JSON。
 

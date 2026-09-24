@@ -92,10 +92,11 @@ export function collectVars(graph, id, workspace, defaults = {}, board = {}, sou
     if (!text || vars.has(name) || fromEdges.has(name)) continue
     vars.set(name, { text, file: fileOf(workspace, boardFile(name)) })
   }
+  // 默认值是扩展作者写的，由扩展自己解读（比如 `空`），不按「人填的路径」去验。
   for (const [name, raw] of Object.entries(defaults)) {
     const text = String(raw ?? '').trim()
     if (!text || vars.has(name) || fromEdges.has(name)) continue
-    vars.set(name, { text, file: text, typed: true })
+    vars.set(name, { text, file: text })
   }
   return { vars, errors }
 }
