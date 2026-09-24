@@ -25,6 +25,23 @@ export function createNode({ kind = 'text', x = 0, y = 0, w = machine.nodeDefaul
   return { id, kind: 'text', x, y, w, h, file: file || `docs/${id}.md`, text }
 }
 
+// 节点的可读名（ADR-0023）：新建时生成，画布内唯一，眼下只给 AI 找节点用。边仍然写 id。
+export function baseName(node) {
+  if (node.kind === 'text') return String(node.file ?? '').split('/').pop().replace(/\.md$/i, '') || 'text'
+  if (node.kind === 'command') {
+    if (node.extension) return node.extension.split(/[\\/]/).filter(Boolean).pop() || 'command'
+    return (node.command ?? '').trim().split(/\s+/)[0] || 'command'
+  }
+  return node.kind
+}
+
+// 撞名就加 -2、-3
+export function uniqueName(nodes, base) {
+  const taken = new Set(nodes.map((node) => node.name))
+  if (!taken.has(base)) return base
+  for (let n = 2; ; n += 1) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`
+}
+
 // 会跑的节点：命令、提取、写入。获取不是 —— 它像文本节点，值就是面板那份 md，不用跑。
 export const runnable = (node) => node?.kind === 'command' || node?.kind === 'extract' || node?.kind === 'set'
 

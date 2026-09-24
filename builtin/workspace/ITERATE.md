@@ -10,7 +10,11 @@
 | 文本节点 | `docs/` 里那份 md | 提示词、工单正文、计划 |
 | 扩展 | 该动作的 `EXTENSION.md` 和它的 entry | 进出契约与脚本 |
 
-面板的值在 `.mican/board/<名字>.md`。缓存文件在 `.mican/<节点id>.out`，由运行产生。
+`mican.json` 只有逻辑：节点的 `id` / `name` / `kind` 和各自的字段，边写的是 `id`。节点靠 `name` 找；新节点给一个画布内唯一的 `name`。
+文本节点的正文只在 `docs/` 那份 md。
+
+位置和视图在 `mican.layout.json`，不用改：缺位置的节点打开时自动摆。
+面板的值在 `.mican/board/<名字>.md`。缓存文件在 `.mican/<节点id>.out`、运行结果在 `.mican/results.json`，由运行产生。
 
 命令的**运行目录**看存档配置，可以不是本文件夹。
 

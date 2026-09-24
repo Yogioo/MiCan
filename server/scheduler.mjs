@@ -1,12 +1,9 @@
 // 定时器：后端持有时刻表，到点自己从入口出发跑一整条链（ADR-0005）。
 // 它读盘上的 mican.json 找定时器节点和它指的入口节点；时刻表跟着前端每次落盘重新装载
 // （api.mjs 在 save / 打开工作文件夹之后调 sync），所以不用轮询文件、也不需要页面在场。
-import fs from 'node:fs/promises'
-import path from 'node:path'
 import { execOutAll } from '../src/core/graph.mjs'
-import { CANVAS_FILE } from '../src/core/paths.mjs'
 import { nextFireAt, parseSchedule } from '../src/core/schedule.mjs'
-import { deserialize } from '../src/core/serialize.mjs'
+import { loadArchive, patchResults } from './archive.mjs'
 
 // 触发记录留一会儿：页面每几秒来问一次（/api/runs 带着 triggers），用它把「上次响没响」摊到节点上。
 const KEEP_HITS = 50
@@ -25,7 +22,7 @@ export function createScheduler({ getRoot, runChain, isRunning, isPaused = () =>
 
   // 到点了：这条链还在跑就跳过这一次（只看链身，别的链照跑），否则让运行器从定时器出发走一整条链。
   async function fire(timerId, headId) {
-    // 进化正在改存档：不写回，只在内存里记一笔
+    // 进化正在改工作文件夹：不写回，只在内存里记一笔
     if (isPaused()) return record(timerId, 'skipped', '上次跳过了（正在进化）')
     if (isRunning(headId)) {
       record(timerId, 'skipped', '上次跳过了（上一条还在跑）')
@@ -42,22 +39,10 @@ export function createScheduler({ getRoot, runChain, isRunning, isPaused = () =>
     }
   }
 
-  // 把这一笔触发补进存档：前端整包落盘时会把它带回来，跟运行结果走的是同一条路。
-  // 现读现改，不整包盖回去 —— 画布结构、别的节点的结果都可能刚被前端改过。
+  // 把这一笔触发补进 results：跟运行结果走的是同一条路，页面重开时读得回来。
   async function writeBack(timerId, result) {
     const root = getRoot()
-    if (!root) return
-    const file = path.join(root, CANVAS_FILE)
-    const raw = await fs.readFile(file, 'utf8').catch(() => null)
-    if (raw === null) return
-    let data
-    try {
-      data = JSON.parse(raw)
-    } catch {
-      return // 存档正在被换掉/写坏，这一笔就丢了，下一圈还会再来
-    }
-    data.results = { ...(data.results ?? {}), [timerId]: result }
-    await fs.writeFile(file, JSON.stringify(data, null, 2), 'utf8').catch(() => {})
+    if (root) await patchResults(root, { [timerId]: result })
   }
 
   function arm(timerId, { headId, schedule, key }) {
@@ -88,14 +73,13 @@ export function createScheduler({ getRoot, runChain, isRunning, isPaused = () =>
   async function load() {
     const root = getRoot()
     if (!root) return clear()
-    const raw = await fs.readFile(path.join(root, CANVAS_FILE), 'utf8').catch(() => null)
-    if (raw === null) return clear()
     let graph
     try {
-      graph = deserialize(JSON.parse(raw)).graph
+      graph = (await loadArchive(root))?.graph
     } catch {
       return clear()
     }
+    if (!graph) return clear()
 
     const wanted = new Map()
     for (const node of graph.nodes) {

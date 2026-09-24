@@ -1,6 +1,6 @@
 # 拆存档：逻辑、布局、运行产物、正文各归各处
 
-Status: proposed
+Status: accepted
 
 [ai-evolution.md](../ai-evolution.md) 第二节。现在 `mican.json` 一份装了四样性质不同的东西：
 图的逻辑、坐标和视图、每跑一次就变的 `results`、文本节点正文的一份副本。pi 改一根边要先在坐标和运行噪声里找节点；

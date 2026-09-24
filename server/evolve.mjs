@@ -7,16 +7,17 @@ import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { dataInto, findNode } from '../src/core/graph.mjs'
-import { CACHE_DIR, CANVAS_FILE, DOCS_DIR, RUNS_FILE } from '../src/core/paths.mjs'
+import { CACHE_DIR, CANVAS_FILE, DOCS_DIR, LAYOUT_FILE, RUNS_FILE } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { nextFireAt, parseSchedule } from '../src/core/schedule.mjs'
-import { deserialize } from '../src/core/serialize.mjs'
+import { FORMAT_VERSION, deserialize } from '../src/core/serialize.mjs'
 import { applyVars } from '../src/core/vars.mjs'
 import { startCommand } from './exec.mjs'
 import { EXT_DIR, LIBRARY_ROOT, commandOf } from './extensions.mjs'
 
-// 进化能动的三层（ITERATE.md）：快照、回滚、commit 都只圈这几处，.mican/ 里的运行产物不跟着卷。
-const LAYERS = [CANVAS_FILE, DOCS_DIR, EXT_DIR]
+// 快照、回滚、commit 都只圈这几处，.mican/ 里的运行产物不跟着卷。
+// pi 只改三层（ITERATE.md）；布局也圈进来，回滚、撤销时用户摆的位置跟着节点一起回来（ADR-0023）。
+const LAYERS = [CANVAS_FILE, LAYOUT_FILE, DOCS_DIR, EXT_DIR]
 const EVOLVE_DIR = `${CACHE_DIR}/evolve`
 // 配置和记录跟工作文件夹走，但不在 pi 能改的三层里：放 mican.json 它就能把自己的触发条件改掉
 const CONFIG_FILE = `${EVOLVE_DIR}/config.json`
@@ -210,27 +211,14 @@ function promptOf({ hint, diagnosis, recent, failure }) {
     '```',
     '',
     '## 规矩',
-    `- 只改 ${CANVAS_FILE}、${DOCS_DIR}/、${EXT_DIR}/ 三处，别碰 ${CACHE_DIR}/。`,
-    `- 文本节点的正文改 ${DOCS_DIR}/ 里那份 md；${CANVAS_FILE} 里的 text 改完会按 md 覆盖。`,
+    `- 只改 ${CANVAS_FILE}、${DOCS_DIR}/、${EXT_DIR}/ 三处，别碰 ${LAYOUT_FILE} 和 ${CACHE_DIR}/。`,
+    `- 文本节点的正文只在 ${DOCS_DIR}/ 里那份 md。`,
     '- 方向是把 agent 每次都在重复做的动作收进脚本（新写一个扩展接进链），并从提示词里删掉让 agent 自己去做的那几句；agent 只留真要判断的那一步。',
-    `- 新节点的 id 别跟已有的重，x / y / w / h 摆在上游旁边；别动 view 和 results。`,
+    `- 节点靠 name 找，边写的是 id。新节点给一个画布内唯一的 name，id 别跟已有的重。`,
     '- 没什么该改的就不改。',
     '- 最后用一两句话说你改了什么、为什么：这段话就是这次 commit 的说明。',
     ...(failure ? ['', '## 上一次没过校验', failure, '', '上一次的改动已经回滚，重新改。'] : []),
   ].join('\n')
-}
-
-// 文本节点的正文以 md 为准：pi 改的是 md，存档里的 text 跟着它走。md 没了就是校验不过。
-async function syncTexts(root, data) {
-  const problems = []
-  for (const node of data.nodes ?? []) {
-    if (node.kind !== 'text') continue
-    const text = await fs.readFile(path.join(root, node.file), 'utf8').catch(() => null)
-    if (text === null) problems.push(`文本节点 ${node.id} 的 ${node.file} 不在了`)
-    else node.text = text
-  }
-  if (!problems.length) await fs.writeFile(path.join(root, CANVAS_FILE), JSON.stringify(data, null, 2), 'utf8')
-  return problems
 }
 
 // 校验只管「改完这条链还跑不跑得起来」，全是机械检查。返回攒下来的问题，空就是过了。
@@ -241,17 +229,25 @@ async function validate(root, sha, { settings, onLog }) {
   } catch (error) {
     return [`${CANVAS_FILE} 解析不了：${error.message}`]
   }
+  if (data?.version !== FORMAT_VERSION) return [`${CANVAS_FILE} 的 version 得是 ${FORMAT_VERSION}`]
+  // 文本节点的正文只在 md：md 没了就是校验不过
+  const texts = {}
+  const problems = []
+  for (const node of Array.isArray(data.nodes) ? data.nodes : []) {
+    if (node?.kind !== 'text' || typeof node.file !== 'string') continue
+    const text = await fs.readFile(path.join(root, node.file), 'utf8').catch(() => null)
+    if (text === null) problems.push(`文本节点 ${node.name || node.id} 的 ${node.file} 不在了`)
+    else texts[node.id] = text
+  }
   let graph
   try {
-    graph = deserialize(data).graph
+    graph = deserialize({ canvas: data, texts }).graph
   } catch (error) {
     return [`${CANVAS_FILE} 结构不对：${error.message}`]
   }
   const ids = new Set(data.nodes.map((node) => node?.id))
-  const problems = data.edges.filter((edge) => !ids.has(edge?.from) || !ids.has(edge?.to)).map((edge) => `边 ${edge?.id} 有一头的节点不在`)
-  problems.push(...(await syncTexts(root, data)))
+  problems.push(...data.edges.filter((edge) => !ids.has(edge?.from) || !ids.has(edge?.to)).map((edge) => `边 ${edge?.id} 有一头的节点不在`))
   if (problems.length) return problems
-  graph = deserialize(data).graph
 
   // 下游取法对得上改完的正文：提取节点的源是文本节点时，照它的取法取一遍
   for (const node of graph.nodes) {

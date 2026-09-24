@@ -8,7 +8,8 @@ import { routeFrom } from '../src/core/chain.mjs'
 import { dataInto, dataOut, execIn, execOutAll, extensionOf, findNode, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
 import { CANVAS_FILE, RUNS_DIR, RUNS_FILE, cacheFile, logFile, portFile, runLogName } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
-import { deserialize, resultMeta } from '../src/core/serialize.mjs'
+import { resultMeta } from '../src/core/serialize.mjs'
+import { loadArchive, patchResults } from './archive.mjs'
 import { applyCanvas, canvas } from '../src/core/settings.mjs'
 import { applyVars, collectVars } from '../src/core/vars.mjs'
 import { startCommand } from './exec.mjs'
@@ -42,7 +43,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
   let seq = 0
   const nextId = () => `r${Date.now().toString(36)}${(seq += 1).toString(36)}`
 
-  // 运行器此刻占着哪些东西：从这一步开始，这些节点的缓存文件、md 和存档里的元信息都由它写。
+  // 运行器此刻占着哪些东西：从这一步开始，这些节点的缓存文件和 md 都由它写。
   // 前端的整包落盘（server/api.mjs 的 save）照这份名单跳过它们，免得把刚写下的盖回旧的（ADR-0009）。
   const ownedBy = (pick) => {
     for (const run of runs.values()) if (run.active && pick(run)) return true
@@ -79,9 +80,9 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
   // 跑之前前端已经落过盘（ADR-0003），所以盘上这份就是最新的。
   // 顺带把缓存文件读回来：单独跑下游时，上游的值（{{名字}}）要从这儿补。
   async function loadGraph(root) {
-    const raw = await fs.readFile(path.join(root, CANVAS_FILE), 'utf8').catch(() => null)
-    if (raw === null) throw new Error('这个文件夹里没有画布存档（mican.json）')
-    const { graph, settings, board } = deserialize(JSON.parse(raw))
+    const loaded = await loadArchive(root)
+    if (!loaded) throw new Error(`这个文件夹里没有画布存档（${CANVAS_FILE}）`)
+    const { graph, settings, board } = loaded
     applyCanvas(settings) // 步数上限、画布运行目录都在这份存档里
     for (const node of graph.nodes) {
       if (!node.result) continue
@@ -91,16 +92,6 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     }
     const declared = board && typeof board === 'object' ? board : {}
     return { graph, board: await liveBoard(root, declared) }
-  }
-
-  // 存档的补写：只动这次跑出来的那两处（results 里的一格、下游文本节点的正文）。
-  // 现读现改，不整包盖回去 —— 前端可能刚改过结构、位置、别的节点。
-  async function patchArchive(root, { results = {}, texts = {} }) {
-    const file = path.join(root, CANVAS_FILE)
-    const data = JSON.parse(await fs.readFile(file, 'utf8'))
-    data.results = { ...(data.results ?? {}), ...results }
-    for (const node of data.nodes ?? []) if (texts[node.id] !== undefined) node.text = texts[node.id]
-    await fs.writeFile(file, JSON.stringify(data, null, 2), 'utf8')
   }
 
   // ---- 值 ----
@@ -256,7 +247,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     return { ...(await settle(run, node, result, outEdges, outputs)), targets: targets.length, route, outputs }
   }
 
-  // 结果三处落地：裸输出进缓存文件、正文进下游文本节点的 md、元信息补进存档，
+  // 结果三处落地：裸输出进缓存文件、正文进下游文本节点的 md、元信息补进 results，
   // 然后告诉前端这一步完了。停止或失败都不覆写下游文本节点。
   // 诊断（stderr）单独存成 .log，跟缓存文件挨着 —— 它不进值，只让人过后能翻。
   async function settle(run, node, result, outEdges, outputs = {}) {
@@ -307,10 +298,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
         texts.push({ nodeId: item.id, text })
       }
     }
-    await patchArchive(run.root, {
-      results: { [node.id]: resultMeta(node) },
-      texts: Object.fromEntries(texts.map((item) => [item.nodeId, item.text])),
-    })
+    await patchResults(run.root, { [node.id]: resultMeta(node) })
     emit(run, { t: 'done', nodeId: node.id, result, texts })
     if (portErrors.length) return { result, error: portErrors.join('；') }
     return { result }

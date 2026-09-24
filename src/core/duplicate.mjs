@@ -1,5 +1,5 @@
 // 选中复制：只出节点与内部边的纯数据，不碰 DOM。
-import { newId } from './graph.mjs'
+import { baseName, newId, uniqueName } from './graph.mjs'
 
 export function snapshotSelection(graph, selected) {
   const ids = new Set()
@@ -18,7 +18,9 @@ export function applyPaste(graph, clip, dx, dy) {
   for (const node of clip.nodes) {
     const id = newId('n')
     map.set(node.id, id)
-    nodes.push(placeNode(node, id, dx, dy))
+    const placed = placeNode(node, id, dx, dy)
+    placed.name = uniqueName([...graph.nodes, ...nodes], baseName(placed))
+    nodes.push(placed)
   }
   for (const edge of clip.edges) {
     const next = {

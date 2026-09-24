@@ -2,7 +2,8 @@
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, LOG_EXT, cacheFile, logFile } from '../src/core/paths.mjs'
+import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, LAYOUT_FILE, LOG_EXT, cacheFile, logFile } from '../src/core/paths.mjs'
+import { keepResults, readArchive } from './archive.mjs'
 import { shellNames } from './exec.mjs'
 import { importExtension, listLibrary, scanExtensions } from './extensions.mjs'
 import { deleteSlot, readSlots, renameSlot, writeSlot } from './board-slots.mjs'
@@ -99,18 +100,16 @@ export function createApi(initialRoot) {
       root = target
       await scheduler.sync() // 新文件夹里没有画布，等于把上一份的时刻表全撤掉
       await evolver.sync()
-      return { root, canvas: null, cache: {}, logs: {}, slots: {}, recent: await remember(target) }
+      return { root, archive: null, cache: {}, logs: {}, slots: {}, recent: await remember(target) }
     }
     const stat = await fs.stat(target).catch(() => null)
     if (!stat?.isDirectory()) throw new Error('文件夹不存在')
     root = target
-    const canvas = await fs
-      .readFile(path.join(target, CANVAS_FILE), 'utf8')
-      .then((raw) => JSON.parse(raw))
-      .catch(() => null) // 没有存档就是空文件夹，照样能打开
+    // 旧存档在这儿就地拆开（ADR-0023）；没有存档就是空文件夹，照样能打开
+    const archive = await readArchive(target).catch(() => null)
     await scheduler.sync() // 换了一份画布，时刻表跟着换
     await evolver.sync() // 自动进化的配置跟工作文件夹走
-    return { root, canvas, ...(await readCache()), slots: await readSlots(target), recent: await remember(target) }
+    return { root, archive, ...(await readCache()), slots: await readSlots(target), recent: await remember(target) }
   }
 
   // 缓存目录是 MiCan 独占的，里面两种文件：.out 是值（stdout），.log 是诊断（stderr）。
@@ -161,24 +160,10 @@ export function createApi(initialRoot) {
     }
   }
 
-  // 进化中盘上的画布：pi 改的是 md，所以文本节点的正文按 md 给。正写到一半解析不了就给 null。
-  async function liveCanvas() {
-    const canvas = await lastCanvas()
-    if (!Array.isArray(canvas?.nodes)) return null
-    for (const node of canvas.nodes) {
-      if (node?.kind !== 'text' || typeof node.file !== 'string') continue
-      let text = null
-      try {
-        text = await fs.readFile(inside(node.file), 'utf8')
-      } catch {}
-      if (text !== null) node.text = text
-    }
-    return canvas
-  }
-
   // 前端把内存镜像整包推过来（ADR-0003）。跑链期间不然：运行器正在写的那些文件它不碰，
   // 否则会把它刚写下的盖回旧的（ADR-0009）。名单是「此刻」的，所以逐项现问，别提前算。
-  async function save({ canvas, docs = [], cache = [], logs = [] }) {
+  // 运行结果不在这里：它只由后端写（ADR-0023）。
+  async function save({ canvas, layout, docs = [], cache = [], logs = [] }) {
     if (!root) throw new Error('还没有工作文件夹')
     if (evolving()) throw new Error('正在进化，画布暂时只读')
     const previous = await lastCanvas()
@@ -229,8 +214,10 @@ export function createApi(initialRoot) {
       await fs.rm(inside(node.file), { force: true })
     }
 
+    await fs.writeFile(path.join(root, LAYOUT_FILE), JSON.stringify(layout ?? {}, null, 2), 'utf8')
     // 画布存档最后写 —— 它相当于提交。
     await fs.writeFile(path.join(root, CANVAS_FILE), JSON.stringify(canvas, null, 2), 'utf8')
+    await keepResults(root, new Set((canvas?.nodes ?? []).map((node) => node?.id)))
     await scheduler.sync() // 存档里可能多了/少了/改写了定时器；没变的那几个原地不动
   }
 
@@ -417,7 +404,8 @@ export function createApi(initialRoot) {
       if (route === '/api/evolve/watch') {
         const status = evolver.status()
         const log = evolver.readLog(body.id, Number(body.from) || 0)
-        return send(res, 200, { status, log, canvas: root ? await liveCanvas() : null })
+        // pi 正写到一半解析不了就给 null
+        return send(res, 200, { status, log, archive: root ? await readArchive(root).catch(() => null) : null })
       }
       if (route === '/api/run') return send(res, 200, await runner.start({ id: body.id, mode: body.mode }))
       if (route.startsWith('/api/run/') && route.endsWith('/stop')) {

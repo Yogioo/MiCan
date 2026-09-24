@@ -1,8 +1,12 @@
 // 工作文件夹里的固定名字：存档、文本节点的 md、命令节点的缓存文件。
 // 前后端都要用，所以单独放着，别在两处各写一遍。
 export const CANVAS_FILE = 'mican.json'
+// 布局（视图和节点的位置尺寸）：用户摆出来的，跟逻辑分开存（ADR-0023）
+export const LAYOUT_FILE = 'mican.layout.json'
 export const DOCS_DIR = 'docs'
 export const CACHE_DIR = '.mican'
+// 运行结果的元信息：只由后端写（运行器、调度器）
+export const RESULTS_FILE = `${CACHE_DIR}/results.json`
 export const CACHE_EXT = '.out'
 export const LOG_EXT = '.log'
 

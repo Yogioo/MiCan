@@ -1,5 +1,6 @@
 // 装配层：持有状态，把状态变更分发给各个界面模块，并定义应用动作。
 import {
+  baseName,
   createGraph,
   createNode,
   findEdge,
@@ -10,10 +11,11 @@ import {
   runnable,
   setNodeCwd,
   setNodeText,
+  uniqueName,
 } from '../core/graph.mjs'
 import { CMD_BAR_H, curveHitsBox, edgeCurve, rectsOverlap } from '../core/geometry.mjs'
 import { inputsOf, outputsOf, sourcePortIndex, targetPortIndex } from '../core/inputs.mjs'
-import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
+import { FORMAT_VERSION, deserialize, serialize, textsOf } from '../core/serialize.mjs'
 import { applyPaste, snapshotSelection } from '../core/duplicate.mjs'
 import { applyBoard, applyCanvas, applyMachine, canvas, machine } from '../core/settings.mjs'
 import { parseSchedule } from '../core/schedule.mjs'
@@ -57,9 +59,18 @@ const subscribers = new Set()
 const history = createHistory()
 let lastRecord = 0
 
+// 逻辑、布局、正文三份都要：拆存档之后它们不在一处了（ADR-0023）
 function graphSnapshot() {
-  const { nodes, edges } = serialize(state)
-  return JSON.stringify({ nodes, edges })
+  const { canvas, layout } = serialize(state)
+  return JSON.stringify({ nodes: canvas.nodes, edges: canvas.edges, layout: layout.nodes, texts: textsOf(state.graph) })
+}
+
+// 布局里没有的节点，没有上游就摆在视口中间
+function viewCenter(view) {
+  const viewport = document.getElementById('viewport')
+  const ok = view && Number.isFinite(view.x) && Number.isFinite(view.y) && view.scale > 0
+  const { x, y, scale } = ok ? view : state.view
+  return { x: (viewport.clientWidth / 2 - x) / scale, y: (viewport.clientHeight / 2 - y) / scale }
 }
 
 function viewKey() {
@@ -156,13 +167,13 @@ function payload() {
   const docs = state.graph.nodes
     .filter((node) => node.kind === 'text')
     .map((node) => ({ file: node.file, content: node.text }))
-  // 缓存文件就是节点的值：裸输出写文件，元信息在存档的 results 里。
+  // 缓存文件就是节点的值：裸输出写文件，元信息在 .mican/results.json（只由后端写）。
   // 命令节点和提取节点都一样，所以过滤按「会不会跑」来，不按 kind 写死。
   // 两份文件一起推：.out 是值（stdout），.log 是诊断（stderr）—— 节点正文优先显示后者。
   const ran = state.graph.nodes.filter((node) => runnable(node) && node.result)
   const cache = ran.map((node) => ({ id: node.id, content: node.result.output ?? '' }))
   const logs = ran.map((node) => ({ id: node.id, content: node.result.log ?? '' }))
-  return { canvas: serialize(state), docs, cache, logs }
+  return { ...serialize(state), docs, cache, logs }
 }
 
 // 进化期间后端不收落盘：做完会从盘上重开
@@ -275,10 +286,10 @@ async function saveAs() {
 async function loadWorkspace(path) {
   const response = await api('/api/workspace', { path, mode: 'open' })
   remember(response)
-  const restored = response.canvas ? deserialize(response.canvas) : null
+  const restored = response.archive ? deserialize(response.archive, { center: viewCenter(response.archive.layout?.view) }) : null
   const cache = response.cache ?? {}
   const logs = response.logs ?? {}
-  // 元信息在存档里、裸输出在缓存文件里、诊断在 .log 里，三份合起来才是一个完整的结果
+  // 元信息在 results 里、裸输出在缓存文件里、诊断在 .log 里，三份合起来才是一个完整的结果
   if (restored) {
     for (const node of restored.graph.nodes) {
       if (!runnable(node) || !node.result) continue
@@ -292,6 +303,7 @@ async function loadWorkspace(path) {
   }
   state.slots = response.slots ?? {}
   adoptWorkspace(response.root, restored ?? { graph: createGraph(), view: state.view })
+  if (restored?.placed.length) scheduleSave() // 现摆的位置记进布局
   evolveWindow.refresh() // 进化的配置和记录跟工作文件夹走
   return restored
 }
@@ -354,6 +366,7 @@ function createNodeAt(world, kind, extra = {}) {
     h,
     ...extra,
   })
+  node.name = uniqueName(state.graph.nodes, baseName(node))
   // 清单里的默认值**不**填进节点：那个框留空，跑的时候由后端拿默认值兜底（ADR-0015）。
   // 框里只剩一句灰色的「默认 …」当提示 —— 拖出来是一张干净的节点。
   const ports = Math.max(inputsOf(node, state.extensions).length, outputsOf(node, state.extensions).length)
@@ -561,7 +574,11 @@ let evolveLog = { id: 0, size: 0 } // 进化窗口已经铺到这次过程的第
 let baseline = new Map() // 进化开始时每个节点的样子，拿来标「进化改过」
 let liveKey = ''
 
-const nodeKeys = (graph) => new Map(serialize({ view: state.view, graph }).nodes.map((node) => [node.id, JSON.stringify(node)]))
+// 「改过」只看逻辑和正文：pi 不碰布局
+const nodeKeys = (graph) => {
+  const texts = textsOf(graph)
+  return new Map(serialize({ view: state.view, graph }).canvas.nodes.map((node) => [node.id, JSON.stringify([node, texts[node.id]])]))
+}
 
 // 进化期间每秒问一次：新增的过程铺进窗口，盘上的画布变了就原地换上。做完从盘上重开。
 async function watchEvolve(status) {
@@ -589,7 +606,7 @@ async function watchEvolve(status) {
     evolveWindow.append(answer.log)
     evolveLog.size += answer.log.length
     state.evolve = answer.status
-    if (answer.canvas) showLiveCanvas(answer.canvas)
+    if (answer.archive) showLiveCanvas(answer.archive)
     notify()
     if (!answer.status.active) break
     await sleep(EVOLVE_POLL_MS)
@@ -599,13 +616,13 @@ async function watchEvolve(status) {
 }
 
 // pi 改到一半的画布：只拿来看，不进撤销、不落盘。运行结果按 id 接回来。
-function showLiveCanvas(canvas) {
-  const key = JSON.stringify([canvas.nodes, canvas.edges])
+function showLiveCanvas(archive) {
+  const key = JSON.stringify([archive.canvas.nodes, archive.canvas.edges, archive.texts])
   if (key === liveKey) return
   liveKey = key
   let restored
   try {
-    restored = deserialize(canvas)
+    restored = deserialize(archive, { center: viewCenter() })
   } catch {
     return // 结构还没改完整，等下一次
   }
@@ -728,7 +745,6 @@ function applyRunEvent(runId, event) {
       }
       for (const item of event.texts ?? []) setNodeText(draft.graph, item.nodeId, item.text)
     })
-    scheduleSave() // 后端补进存档的那几个键，也从这边过一道，别只在内存里
     return
   }
   if (event.t === 'skipped') {
@@ -856,10 +872,10 @@ function resetZoom() {
 }
 
 function applyGraph(snapshot) {
-  const { nodes, edges } = JSON.parse(snapshot)
+  const { nodes, edges, layout, texts } = JSON.parse(snapshot)
   // 运行结果不是被编辑的结构，撤销不该顺手把它扫掉（那会连带删掉磁盘上的缓存文件），按 id 接回来
   const kept = new Map(state.graph.nodes.map((node) => [node.id, node.result]))
-  const restored = deserialize({ version: FORMAT_VERSION, nodes, edges }).graph
+  const restored = deserialize({ canvas: { version: FORMAT_VERSION, nodes, edges }, layout: { nodes: layout }, texts }).graph
   for (const node of restored.nodes) {
     // 定时器的触发记录也不是被编辑的结构，按 id 接回来
     if ((runnable(node) || node.kind === 'timer') && kept.get(node.id)) node.result = kept.get(node.id)
