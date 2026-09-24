@@ -1,0 +1,46 @@
+name: 打包发行版
+
+# 打 v 开头的 tag 就出正式版；平时想试就手动点一次（产物在 Actions 页面的 Artifact 里）。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # 建 release、传文件
+
+jobs:
+  pack:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # 一个平台挂了，别的照样出包
+      matrix:
+        include:
+          - { os: windows-latest, target: win-x64 }
+          - { os: macos-latest, target: mac-arm64 }
+          # Intel 的 mac：GitHub 会陆续退休这些 runner 标签，报错说找不到就来这儿换一个
+          - { os: macos-15-intel, target: mac-x64 }
+          - { os: ubuntu-latest, target: linux-x64 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # 压缩包交给各平台自己压：zip 存不下 Unix 的执行位，mac 的 .command 少了它双击不起来
+      - run: node scripts/pack.mjs ${{ matrix.target }}
+        env:
+          NODE_VERSION: v24.12.0 # 自带的那份运行时钉死，免得每次发版都不一样
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiCan-${{ matrix.target }}
+          path: release/*
+          if-no-files-found: error
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: release/*
+          generate_release_notes: true
