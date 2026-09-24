@@ -38,7 +38,8 @@ function valueOf(workspace, source, fromPort = '', spec = '', board = {}) {
 // 收集入边变量。所有对不上的地方攒起来一次报，别让用户一次修一个。
 // 值的合法性（空、换行）不在这里管：只有真被写进命令的那一个才算数。
 // defaults 是扩展清单给的默认值；board 是这份画布的面板。都是**缺省回退**：
-// 那个名字既没填常量、也没连边，才往下找。连了边却没跑过（errors 里那条）不在这儿顶。
+// 那个名字既没填常量、也没连边，才往下找。连了边却是空的，也算没填（游标第一次就是这样）。
+// 连了边却没跑过（errors 里那条）不在这儿顶。
 export function collectVars(graph, id, workspace, defaults = {}, board = {}, sourceOutputs = {}) {
   const vars = new Map()
   const errors = []
@@ -74,6 +75,12 @@ export function collectVars(graph, id, workspace, defaults = {}, board = {}, sou
     }
     if (value.error) {
       errors.push(`「${edge.label}」：${value.error}`)
+      continue
+    }
+    const text = String(value.text ?? '').trim()
+    if (!text) {
+      const fallback = String(board[edge.label] ?? defaults[edge.label] ?? '').trim()
+      vars.set(edge.label, { text: fallback, file: value.file || fallback })
       continue
     }
     vars.set(edge.label, value)

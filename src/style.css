@@ -477,9 +477,12 @@ body.space-ready #viewport {
   border: 1.5px solid #9db6e4;
 }
 
-.node.kind-text .node-port.port-data,
-.node.kind-get .node-port.port-data {
+.node.kind-text .node-port.port-data {
   top: 50%;
+}
+
+.node.kind-get .node-port.port-data {
+  top: 13px;
 }
 
 /* 标题条左端的「入」圆点：执行边就是从这儿进来的。它只是个标记，不拉线
@@ -629,8 +632,7 @@ body.space-ready #viewport {
 }
 
 /* 文本节点：标题栏占顶部一条，正文从它下面开始 */
-.node.kind-text .node-body,
-.node.kind-get .node-body {
+.node.kind-text .node-body {
   top: 26px;
 }
 
@@ -819,7 +821,6 @@ body.space-ready #viewport {
 /* 输出是给人看、给人抄的：允许选中复制，调试时最常干的事 */
 .node.kind-command .node-body,
 .node.kind-extract .node-body,
-.node.kind-get .node-body,
 .node.kind-set .node-body {
   user-select: text;
 }
@@ -830,10 +831,6 @@ body.space-ready #viewport {
 
 .node.kind-extract .node-body.empty::before {
   content: '还没有取过值';
-}
-
-.node.kind-get .node-body.empty::before {
-  content: '还没有值';
 }
 
 .node.kind-set .node-body.empty::before {
@@ -862,6 +859,11 @@ body.space-ready #viewport {
 .node.kind-get .node-kind {
   margin-right: 6px;
   color: #6a7a9a;
+}
+
+.node.kind-get .node-title {
+  border-bottom: 0;
+  border-radius: 10px;
 }
 
 .node.kind-timer.invalid .node-cmd {

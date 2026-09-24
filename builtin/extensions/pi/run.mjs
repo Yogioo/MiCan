@@ -1,8 +1,9 @@
 // pi：在运行目录里让 pi 干一件事，把它的回话包成一段 JSON（见 EXTENSION.md）。
 //
-// 自己只认两个参数，其余**原样转给 pi**：
+// 自己只认三个参数，其余**原样转给 pi**：
 //   `--prompt <md 路径 | 正文>`   提示词。长的那样给路径（多行的进不了命令行）；短的直接把字写在这儿就行。
-//   `--留会话 <true|false>`  留就什么都不加，不留就补上 `--no-session`。
+//   `--留会话 <true|false>`  没填会话 id 时：留就什么都不加，不留就补上 `--no-session`。
+//   `--会话 <id>`            有值就 `--session-id <id>`（没有就建、有就续）；空就当没这栏。
 //
 // 「原样转给 pi」的意思是：节点上那四个开关框里写什么，pi 就收到什么（`--provider sub2api`、
 // `--tools read,bash`……）。唯一的保留词是 `空`（清单里每个开关的默认值），意思是「这条开关不要」：
@@ -18,8 +19,9 @@ import fs from 'node:fs/promises'
 
 // 开关框里写它 = 这个开关不加任何参数（见 EXTENSION.md）。
 const NO_FLAG = '空'
-// 自己认的另一个名字：留会话，true / false。
+// 自己认的两个名字：留会话是 true / false；会话是钥匙，空就当没填。
 const KEEP_SESSION = '--留会话'
+const SESSION_ID = '--会话'
 const IS_WINDOWS = process.platform === 'win32'
 const say = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
 
@@ -114,11 +116,12 @@ function startPi(args, cwd) {
   return spawn('cmd.exe', ['/d', '/s', '/c', `"${command}"`], { cwd, windowsVerbatimArguments: true })
 }
 
-// argv 里 --prompt / --留会话 归自己，`空` 滤掉，其余一个不动地留给 pi。
+// argv 里 --prompt / --留会话 / --会话 归自己，`空` 滤掉，其余一个不动地留给 pi。
 function split(argv) {
   const rest = []
   let prompt = ''
   let keepSession = false
+  let sessionId = ''
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--prompt') {
@@ -130,6 +133,10 @@ function split(argv) {
       if (value !== 'true' && value !== 'false') throw new Error(`${KEEP_SESSION} 只认 true / false，收到「${value}」`)
       keepSession = value === 'true'
       i += 1
+    } else if (arg === SESSION_ID) {
+      const value = argv[i + 1] ?? ''
+      i += 1
+      sessionId = value === NO_FLAG ? '' : value
     } else if (arg === NO_FLAG) {
       // `空` = 「这条开关不要」。清单里写成 `--provider {{提供商}}`（框里只填值）时，
       // 它就落在开关后面 —— 得把那个光秃秃的开关也抹掉，否则 pi 会把下一个参数当成它的值。
@@ -139,7 +146,7 @@ function split(argv) {
       rest.push(arg)
     }
   }
-  return { prompt, keepSession, rest }
+  return { prompt, keepSession, sessionId, rest }
 }
 
 // 提示词有两副面孔：给一份 md 的**路径**（`[[提示词]]` 接文本节点时就是它）就读那份文件；
@@ -284,7 +291,7 @@ const runPi = (args, input, cwd, state) =>
   })
 
 try {
-  const { prompt, keepSession, rest } = split(process.argv.slice(2))
+  const { prompt, keepSession, sessionId, rest } = split(process.argv.slice(2))
   if (!prompt) throw new Error('没给 --prompt：节点上的「提示词」还没接上')
   const text = await readPrompt(prompt)
   if (text === null) throw new Error(`提示词读不到：${prompt}`)
@@ -296,10 +303,11 @@ try {
     const list = strays.map((item) => `「${item}」`).join('')
     throw new Error(`${list}不是开关，会被 pi 当成提示词（一条独立的消息）。开关框的写法看扩展的 args 行：带了前缀的（--provider {{提供商}}）只填值 sub2api，整串开关那一栏（{{工具}}）才写 --tools read,bash`)
   }
-  // --mode json：说完就退，而且全程有事件可看。stdin 里那份正文就是初始消息，
-  // 多长、多少行都无所谓。留会话才不加 --no-session —— 默认不留：链会重跑，会话文件只会一路涨。
+  // --mode json：说完就退，而且全程有事件可看。stdin 里那份正文就是这一轮的消息，
+  // 多长、多少行都无所谓。有会话 id 就钉死那一份（没有就建）；没有 id 才看留会话。
   const args = ['--mode', 'json', ...rest]
-  if (!keepSession) args.push('--no-session')
+  if (sessionId) args.push('--session-id', sessionId)
+  else if (!keepSession) args.push('--no-session')
   const state = { lastAt: Date.now(), turns: 0, tools: 0, answer: '', err: '', toolAt: new Map(), toolMs: 0, thinkAt: undefined }
   // 卡住得看得出来：二十分钟没动静和「正在想」在画布上一模一样，所以静下来就把等了多久写出来
   const beat = setInterval(() => {

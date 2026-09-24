@@ -25,7 +25,7 @@ function oneLine(text) {
 }
 
 // 入口：spec 是取法那段文本。要么 { value }，要么 { error } —— 一句话说清为什么取不到。
-// multiline：出口上的字段可以多行（回话、评论）；提取节点 / 选路仍走默认的单行。
+// multiline：出口和提取节点可以多行（回话、评论）；选路仍走默认的单行。
 export function pickValue(text, spec, { multiline = false } = {}) {
   const { format, path, error } = parsePick(spec)
   if (error) return { error }

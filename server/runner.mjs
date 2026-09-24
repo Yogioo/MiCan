@@ -161,7 +161,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       // 提取节点不 spawn 任何进程：拿源文本按取法取出一个字符串，那就是它的值
       const source = await sourceTextOf(run, id)
       if (source.error) return { error: source.error }
-      const { value, error } = pickValue(source.text, node.pick ?? '')
+      const { value, error } = pickValue(source.text, node.pick ?? '', { multiline: true })
       if (error) return { error: `提取不出值：${error}` }
       return { ...(await settle(run, node, { output: value, at: Date.now(), elapsed: Date.now() - startedAt }, outEdges)), targets: targets.length }
     }
@@ -318,8 +318,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
       }
       let value = (result.output ?? '').trim()
       if (outcome.route) {
-        const spec = outcome.outputs?.[outcome.route]
-        if (!spec) return finish(run, 'error', stepMessage(run, step, `清单的 route「${outcome.route}」不是一个出口`))
+        // 出口名，或直接写取法（json:有新评论）。后者不长数据口，只给执行边选路。
+        const spec = outcome.outputs?.[outcome.route] ?? outcome.route
         const picked = pickValue(result.output ?? '', spec)
         if (picked.error) return finish(run, 'error', stepMessage(run, step, `选路「${outcome.route}」取不到：${picked.error}`))
         value = picked.value

@@ -1,5 +1,5 @@
 // 图：节点与边的纯数据操作，不碰 DOM。
-import { INPUT_ROW, NODE_FOOT_H } from './geometry.mjs'
+import { CMD_BAR_H, INPUT_ROW, NODE_FOOT_H } from './geometry.mjs'
 import { DEFAULT_SCHEDULE } from './schedule.mjs'
 import { machine } from './settings.mjs'
 import { parseTokens } from './tokens.mjs'
@@ -123,7 +123,7 @@ export function resizeNode(graph, id, w, h) {
   const node = findNode(graph, id)
   if (!node) return
   node.w = Math.max(machine.nodeMinW, w)
-  node.h = Math.max(machine.nodeMinH, h)
+  node.h = node.kind === 'get' ? CMD_BAR_H : Math.max(machine.nodeMinH, h)
 }
 
 export function setNodeText(graph, id, text) {

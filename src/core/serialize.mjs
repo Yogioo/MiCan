@@ -1,4 +1,5 @@
 // 存档格式：与工作文件夹里的 mican.json 共用的唯一结构。
+import { CMD_BAR_H } from './geometry.mjs'
 import { newId, runnable } from './graph.mjs'
 import { DEFAULT_SCHEDULE } from './schedule.mjs'
 import { boardIn, boardPatch, canvasPatch, machine } from './settings.mjs'
@@ -125,8 +126,11 @@ export function deserialize(data) {
     if (node.kind === 'extract') {
       return { id: node.id, kind: 'extract', x: node.x, y: node.y, ...size, pick: typeof node.pick === 'string' ? node.pick : '' }
     }
-    if (node.kind === 'get' || node.kind === 'set') {
-      return { id: node.id, kind: node.kind, x: node.x, y: node.y, ...size, slot: typeof node.slot === 'string' ? node.slot : '' }
+    if (node.kind === 'get') {
+      return { id: node.id, kind: 'get', x: node.x, y: node.y, w: size.w, h: CMD_BAR_H, slot: typeof node.slot === 'string' ? node.slot : '' }
+    }
+    if (node.kind === 'set') {
+      return { id: node.id, kind: 'set', x: node.x, y: node.y, ...size, slot: typeof node.slot === 'string' ? node.slot : '' }
     }
     if (node.kind === 'entry') return { id: node.id, kind: 'entry', x: node.x, y: node.y, ...size }
     if (node.kind === 'timer') {

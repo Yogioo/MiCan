@@ -11,7 +11,7 @@ import {
   setNodeCwd,
   setNodeText,
 } from '../core/graph.mjs'
-import { curveHitsBox, edgeCurve, rectsOverlap } from '../core/geometry.mjs'
+import { CMD_BAR_H, curveHitsBox, edgeCurve, rectsOverlap } from '../core/geometry.mjs'
 import { inputsOf, outputsOf, sourcePortIndex, targetPortIndex } from '../core/inputs.mjs'
 import { FORMAT_VERSION, deserialize, serialize } from '../core/serialize.mjs'
 import { applyPaste, snapshotSelection } from '../core/duplicate.mjs'
@@ -339,7 +339,7 @@ async function openStartupWorkspace() {
 function createNodeAt(world, kind, extra = {}) {
   const compact = kind === 'get' || kind === 'set'
   const w = compact ? 200 : machine.nodeDefaultW
-  const h = compact ? 88 : machine.nodeDefaultH
+  const h = kind === 'get' ? CMD_BAR_H : compact ? 88 : machine.nodeDefaultH
   const node = createNode({
     kind,
     x: world.x - w / 2,

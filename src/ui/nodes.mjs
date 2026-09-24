@@ -24,8 +24,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     for (const node of state.graph.nodes) {
       alive.add(node.id)
       let el = elements.get(node.id)
-      // 获取改过模板（不再带执行端口），旧 DOM 丢掉重画
-      if (el && node.kind === 'get' && !el.querySelector('.node-title')) {
+      // 获取改过模板（不再带正文），旧 DOM 丢掉重画
+      if (el && node.kind === 'get' && el.querySelector('.node-body')) {
         el.remove()
         elements.delete(node.id)
         el = null
@@ -36,6 +36,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
         elements.set(node.id, el)
         layer.append(el)
       }
+      if (node.kind === 'get') node.h = CMD_BAR_H
       el.style.transform = `translate(${node.x}px, ${node.y}px)`
       el.style.width = `${node.w}px`
       el.style.height = `${node.h}px`
@@ -43,7 +44,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       // 编辑中的节点正文归输入框管，这里不碰
       if (node.kind === 'text') renderText(el, node)
       else if (node.kind === 'extract') renderExtract(el, node, state)
-      else if (node.kind === 'get') renderGet(el, node, state)
+      else if (node.kind === 'get') renderGet(el, node)
       else if (node.kind === 'set') renderSlot(el, node, state)
       else if (node.kind === 'entry') renderEntry(el, node, state)
       else if (node.kind === 'timer') renderTimer(el, node)
@@ -272,19 +273,12 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     el.querySelector('.node-foot').textContent = at ? `取值 · ${at}` : ''
   }
 
-  function renderGet(el, node, state) {
+  function renderGet(el, node) {
     const name = node.slot ?? ''
     const file = el.querySelector('.node-file')
     if (file.textContent !== name) file.textContent = name
     const known = name && Object.prototype.hasOwnProperty.call(board, name)
     el.classList.toggle('invalid', Boolean(name) && !known)
-    const content = name ? String(state.slots?.[name] ?? board[name] ?? '') : ''
-    const body = el.querySelector('.node-body')
-    if (el._text !== content) {
-      body.textContent = content
-      body.classList.toggle('empty', !content)
-      el._text = content
-    }
   }
 
   // 写入：顶上是属性名，中间是刚写进去的正文。
@@ -405,7 +399,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       node.kind === 'text'
         ? `<div class="node-title"><span class="node-file"></span></div><div class="node-body"></div>${TEXT_PORT}<div class="node-handle"></div>`
         : node.kind === 'get'
-          ? `<div class="node-title"><span class="node-kind">获取</span><span class="node-file"></span></div><div class="node-body"></div>${TEXT_PORT}<div class="node-handle"></div>`
+          ? `<div class="node-title"><span class="node-kind">获取</span><span class="node-file"></span></div>${TEXT_PORT}<div class="node-handle"></div>`
         : node.kind === 'entry'
           ? `<div class="node-title"><span class="node-kind">入口</span></div><div class="node-body"></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
           : node.kind === 'timer'
@@ -654,7 +648,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     const nodeEl = target.closest?.('.node')
     // 只有命令、提取两种节点（会跑的）的正文能选：跟 CSS 里那条 user-select: text 是同一件事
     if (!body || !nodeEl) return null
-    if (!nodeEl.classList.contains('kind-command') && !nodeEl.classList.contains('kind-extract') && !nodeEl.classList.contains('kind-get') && !nodeEl.classList.contains('kind-set')) return null
+    if (!nodeEl.classList.contains('kind-command') && !nodeEl.classList.contains('kind-extract') && !nodeEl.classList.contains('kind-set')) return null
     // 多选之后这一拖是「整批搬家」，跟正文没关系：别顺手把正文划上一片
     const selected = getState().selection
     if (selected.size > 1 && selected.has(nodeEl.dataset.id)) return null
@@ -751,7 +745,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     // 输出是给人看、给人抄的：从正文上按下的不当拖动，把选字让给浏览器，方便调试时复制。
     // 拖动节点还有标题条和四周的边；正文空着时照旧整块都能拖。
     // 但圈了一批之后再从正文上按下，要的是搬走这一批 —— 整批拖动压过选字。
-    const hasBody = node.kind === 'command' || node.kind === 'extract' || node.kind === 'get' || node.kind === 'set'
+    const hasBody = node.kind === 'command' || node.kind === 'extract' || node.kind === 'set'
     if (!grouped && hasBody && event.target.closest('.node-body') && bodyOutput(node, getState())) {
       event.stopPropagation()
       update((state) => {
