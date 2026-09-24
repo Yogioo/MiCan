@@ -16,6 +16,7 @@ export const MACHINE_FIELDS = [
   { group: '命令', key: 'shell', label: '命令行', kind: 'shell', def: '', hint: '命令交给哪个命令行去跑' },
   { group: '命令', key: 'timeout', label: '单个命令最多跑多久', kind: 'int', unit: '秒', def: 7200, min: 1, max: 86400, hint: '超时就掐掉这个节点' },
   { group: '命令', key: 'outputLimitKb', label: '单个命令的输出上限', kind: 'int', unit: 'KB', def: 1024, min: 1, max: 65536, hint: '超过就截断，并在节点上标「输出被截断」' },
+  { group: '命令', key: 'runLogKeep', label: '每个节点留几次诊断', kind: 'int', unit: '次', def: 20, min: 1, max: 1000, hint: '每次运行的 .log 另存进 .mican/runs/，超出的删掉最旧的', ...ADV },
   { group: '打开', key: 'openWorkspace', label: '启动时打开的工作文件夹', kind: 'path', def: '', tier: 'hidden', hint: '在「打开」弹窗里勾选，不在这儿改' },
   { group: '界面', key: 'nodeDefaultW', label: '新建节点的宽', kind: 'int', unit: 'px', def: 320, min: 80, max: 2000, hint: '双击空白处新建的文本节点也按这个尺寸' },
   { group: '界面', key: 'nodeDefaultH', label: '新建节点的高', kind: 'int', unit: 'px', def: 200, min: 60, max: 2000 },
@@ -122,7 +123,7 @@ export function applyBoard(data) {
 
 const snapshot = (fields, source) => Object.fromEntries(fields.map((field) => [field.key, source[field.key]]))
 
-// 发给后端的那一份（后端只认 shell / timeout / outputLimitKb / recentMax / openWorkspace，其余原样存着）
+// 发给后端的那一份（后端只认 shell / timeout / outputLimitKb / runLogKeep / recentMax / openWorkspace，其余原样存着）
 export function machinePatch() {
   return snapshot(MACHINE_FIELDS, machine)
 }

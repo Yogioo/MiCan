@@ -6,7 +6,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { routeFrom } from '../src/core/chain.mjs'
 import { dataInto, dataOut, execIn, execOutAll, extensionOf, findNode, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
-import { CANVAS_FILE, cacheFile, logFile, portFile } from '../src/core/paths.mjs'
+import { CANVAS_FILE, RUNS_DIR, RUNS_FILE, cacheFile, logFile, portFile, runLogName } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { deserialize, resultMeta } from '../src/core/serialize.mjs'
 import { applyCanvas, canvas } from '../src/core/settings.mjs'
@@ -314,7 +314,49 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     return { result }
   }
 
+  // ---- 历史 ----
+
+  // 一行一次运行，追加进 runs.jsonl。值不进来（缓存文件里有）；.log 按次另存一份，这一行记上文件名。
+  // 另存的 .log 每个节点只留最近 runLogKeep 份（机器设置）。
+  async function remember(run, id, result, route) {
+    const at = result.at ?? Date.now()
+    const entry = { at, node: id, chain: run.nodeId, by: run.trigger }
+    if (route !== undefined) entry.route = route
+    Object.assign(entry, { code: result.code ?? 0, failed: Boolean(result.failed), ms: result.elapsed ?? 0 })
+    // .log 存不下来，这一行照记，只是不带 log
+    if (result.log) entry.log = await keepLog(run.root, at, id, result.log).catch(() => undefined)
+    await fs.appendFile(path.join(run.root, RUNS_FILE), `${JSON.stringify(entry)}\n`, 'utf8')
+  }
+
+  async function keepLog(root, at, id, log) {
+    const dir = path.join(root, RUNS_DIR)
+    await fs.mkdir(dir, { recursive: true })
+    const name = runLogName(at, id)
+    await fs.writeFile(path.join(dir, name), log, 'utf8')
+    const { runLogKeep } = await readSettings()
+    const mine = (await fs.readdir(dir))
+      .map((file) => ({ file, match: /^(\d+)-(.+)\.log$/.exec(file) }))
+      .filter((item) => item.match?.[2] === id)
+      .sort((a, b) => Number(b.match[1]) - Number(a.match[1]))
+    for (const item of mine.slice(runLogKeep)) await fs.rm(path.join(dir, item.file), { force: true }).catch(() => {})
+    return name
+  }
+
   // ---- 走路 ----
+
+  // 这一步跑完往哪走：拿它的值（声明了 route 就按它取）挑一根执行出边。
+  function nextOf(run, id, outcome) {
+    const output = outcome.result.output ?? ''
+    let value = output.trim()
+    if (outcome.route) {
+      // 出口名，或直接写取法（json:有新评论）。后者不长数据口，只给执行边选路。
+      const spec = outcome.outputs?.[outcome.route] ?? outcome.route
+      const picked = pickValue(output, spec)
+      if (picked.error) return { error: `选路「${outcome.route}」取不到：${picked.error}` }
+      value = picked.value
+    }
+    return { ...routeFrom(run.graph, id, value), value }
+  }
 
   // 每一步「当前节点跑完，拿它的值按标签挑一根执行出边」，走到走不下去为止。
   // 出边可以成环，所以兜「跑飞了」的只有步数上限（存档配置 canvas.stepLimit）。
@@ -325,30 +367,26 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     for (let step = 1; step <= limit; step += 1) {
       if (run.stopped) return finish(run, 'stopped', stopMessage(run, step - 1))
       const outcome = await runStep(run, cursor, step)
+      const result = outcome.result
+      // 没跑起来（验不过）不进历史；跑了、哪怕出口没取到，都算一次
+      if (!result) return finish(run, 'error', stepMessage(run, step, outcome.error))
+      const going = run.mode === 'chain' && !outcome.error && !result.stopped && !run.stopped && !result.failed ? nextOf(run, cursor, outcome) : null
+      await remember(run, cursor, result, going?.label).catch(() => {})
       if (outcome.error) return finish(run, 'error', stepMessage(run, step, outcome.error))
       // 停止有两处：当前这条命令被掐掉（结果里标了 stopped），或停在了两步之间的空档
-      const result = outcome.result
       if (result.stopped || run.stopped) return finish(run, 'stopped', stopMessage(run, step))
       if (result.failed) return finish(run, 'failed', failMessage(run, step, result))
       if (run.mode === 'node') {
         return finish(run, 'ok', outcome.targets ? `输出已灌给 ${outcome.targets} 个下游文本节点` : '没有下游文本节点，输出只显示在节点上')
       }
-      let value = (result.output ?? '').trim()
-      if (outcome.route) {
-        // 出口名，或直接写取法（json:有新评论）。后者不长数据口，只给执行边选路。
-        const spec = outcome.outputs?.[outcome.route] ?? outcome.route
-        const picked = pickValue(result.output ?? '', spec)
-        if (picked.error) return finish(run, 'error', stepMessage(run, step, `选路「${outcome.route}」取不到：${picked.error}`))
-        value = picked.value
-      }
-      const next = routeFrom(run.graph, cursor, value)
-      if (next.done) return finish(run, 'ok', `链路跑完：${step} 步，走到一个没有出边的节点`)
-      if (next.stuck) {
+      if (going.error) return finish(run, 'error', stepMessage(run, step, going.error))
+      if (going.done) return finish(run, 'ok', `链路跑完：${step} 步，走到一个没有出边的节点`)
+      if (going.stuck) {
         // 它本来可能走的那几根都记上「未运行」，不然分不清「没走」和「走了是空的」
         emit(run, { t: 'skipped', ids: [...new Set(execOutAll(run.graph, cursor).map((edge) => edge.to))] })
-        return finish(run, 'stuck', `第 ${step} 步的值是「${clip(value)}」，出边上的标签是「${next.labels.join('、')}」，一根都不匹配，停在这儿`)
+        return finish(run, 'stuck', `第 ${step} 步的值是「${clip(going.value)}」，出边上的标签是「${going.labels.join('、')}」，一根都不匹配，停在这儿`)
       }
-      cursor = next.to
+      cursor = going.to
     }
     return finish(run, 'limit', `走了 ${limit} 步还没停，多半是环没兜住，停下来别再走了`)
   }

@@ -4,7 +4,7 @@
 import { execOutAll } from './graph.mjs'
 
 // 一步：拿 value 挑下一根。三种结果 ——
-//   { to }        走这根
+//   { to, label } 走这根（label 是它的标签，兜底边是空串）
 //   { done: true } 没有出边，到头了（这就是「验收通过就结束」的表达方式）
 //   { stuck }     有出边但一根都不匹配
 // 先找标签相等的，再找空标签的兜底边。
@@ -13,5 +13,5 @@ export function routeFrom(graph, id, value) {
   if (!out.length) return { done: true }
   const picked = out.find((edge) => (edge.label ?? '') === value) ?? out.find((edge) => !(edge.label ?? ''))
   if (!picked) return { stuck: true, labels: out.map((edge) => edge.label).filter(Boolean) }
-  return { to: picked.to }
+  return { to: picked.to, label: picked.label ?? '' }
 }

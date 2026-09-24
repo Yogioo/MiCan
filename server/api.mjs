@@ -19,6 +19,9 @@ const MAX_TIMEOUT_S = 24 * 3600
 // 一个节点的输出上限：默认 1MB。超了就截断（不杀进程）—— 杀掉等于把 agent 的活白干了。
 const DEFAULT_OUTPUT_KB = 1024
 const MAX_OUTPUT_KB = 65536
+// 每个节点另存的 .log 留几次：agent 的一份可能几百 KB，别无限攒。
+const DEFAULT_RUN_LOG_KEEP = 20
+const MAX_RUN_LOG_KEEP = 1000
 const DEFAULT_RECENT_MAX = 8
 const MAX_RECENT_MAX = 50
 const MAX_BODY = 32 * 1024 * 1024
@@ -207,11 +210,12 @@ export function createApi(initialRoot) {
         shell: typeof data.shell === 'string' ? data.shell : '',
         timeout: clampInt(data.timeout, DEFAULT_TIMEOUT_S, 1, MAX_TIMEOUT_S),
         outputLimitKb: clampInt(data.outputLimitKb, DEFAULT_OUTPUT_KB, 1, MAX_OUTPUT_KB),
+        runLogKeep: clampInt(data.runLogKeep, DEFAULT_RUN_LOG_KEEP, 1, MAX_RUN_LOG_KEEP),
         recentMax: clampInt(data.recentMax, DEFAULT_RECENT_MAX, 1, MAX_RECENT_MAX),
       }
     } catch {
       // 没设过、或存坏了，都当没设
-      return { shell: '', timeout: DEFAULT_TIMEOUT_S, outputLimitKb: DEFAULT_OUTPUT_KB, recentMax: DEFAULT_RECENT_MAX }
+      return { shell: '', timeout: DEFAULT_TIMEOUT_S, outputLimitKb: DEFAULT_OUTPUT_KB, runLogKeep: DEFAULT_RUN_LOG_KEEP, recentMax: DEFAULT_RECENT_MAX }
     }
   }
 
@@ -240,6 +244,12 @@ export function createApi(initialRoot) {
     const kb = Math.round(Number(value))
     if (!Number.isFinite(kb) || kb < 1) throw new Error(`输出上限得是大于 0 的 KB 数：${value}`)
     return Math.min(kb, MAX_OUTPUT_KB)
+  }
+
+  function checkRunLogKeep(value) {
+    const count = Math.round(Number(value))
+    if (!Number.isFinite(count) || count < 1) throw new Error(`每个节点留几次诊断得是大于 0 的整数：${value}`)
+    return Math.min(count, MAX_RUN_LOG_KEEP)
   }
 
   function checkRecentMax(value) {
@@ -298,6 +308,7 @@ export function createApi(initialRoot) {
         if (typeof body.shell === 'string') patch.shell = checkShell(body.shell)
         if (body.timeout !== undefined) patch.timeout = checkTimeout(body.timeout)
         if (body.outputLimitKb !== undefined) patch.outputLimitKb = checkOutputLimit(body.outputLimitKb)
+        if (body.runLogKeep !== undefined) patch.runLogKeep = checkRunLogKeep(body.runLogKeep)
         if (body.recentMax !== undefined) patch.recentMax = checkRecentMax(body.recentMax)
         if (typeof body.openWorkspace === 'string') patch.openWorkspace = requireAbsolute(body.openWorkspace, '启动时打开的工作文件夹')
         // 界面上那堆手感值（节点尺寸、缩放范围…）后端不认识，原样存着走 —— 免得前端加一项配置就得改后端。

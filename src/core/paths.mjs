@@ -15,3 +15,7 @@ export const portFile = (id, port) => `${CACHE_DIR}/${id}.${String(port).replace
 // 面板属性的值：一份对一个名字，跟节点缓存分开，换工作文件夹也在。
 export const BOARD_DIR = `${CACHE_DIR}/board`
 export const boardFile = (name) => `${BOARD_DIR}/${String(name).replace(/[\\/]/g, '_')}.md`
+// 运行历史：一行一次运行，只追加。每次的 .log 另存进 runs/，按节点只留最近几份。
+export const RUNS_FILE = `${CACHE_DIR}/runs.jsonl`
+export const RUNS_DIR = `${CACHE_DIR}/runs`
+export const runLogName = (at, id) => `${at}-${id}${LOG_EXT}`
