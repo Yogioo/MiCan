@@ -570,7 +570,7 @@ async function restoreEvolve(entry, lost) {
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
 const EVOLVE_POLL_MS = 1000
 let watching = false
-let evolveLog = { id: 0, size: 0 } // 进化窗口已经铺到这次过程的第几个字
+let evolveLog = { id: 0, size: 0, prompts: 0 } // 进化窗口已经铺到这次过程的第几个字、拿到第几份提示词
 let baseline = new Map() // 进化开始时每个节点的样子，拿来标「进化改过」
 let liveKey = ''
 
@@ -593,7 +593,7 @@ async function watchEvolve(status) {
   for (;;) {
     let answer
     try {
-      answer = await api('/api/evolve/watch', { id: evolveLog.id, from: evolveLog.size })
+      answer = await api('/api/evolve/watch', { id: evolveLog.id, from: evolveLog.size, prompts: evolveLog.prompts })
     } catch {
       await sleep(EVOLVE_POLL_MS)
       continue
@@ -601,10 +601,11 @@ async function watchEvolve(status) {
     // 换了一次进化：后端给的是整段，窗口从头铺
     if (answer.status.logId !== evolveLog.id) {
       evolveWindow.reset()
-      evolveLog = { id: answer.status.logId, size: 0 }
+      evolveLog = { id: answer.status.logId, size: 0, prompts: 0 }
     }
-    evolveWindow.append(answer.log)
+    evolveWindow.append(answer.log, answer.prompts)
     evolveLog.size += answer.log.length
+    evolveLog.prompts += answer.prompts.length
     state.evolve = answer.status
     if (answer.archive) showLiveCanvas(answer.archive)
     notify()

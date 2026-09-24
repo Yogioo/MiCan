@@ -469,13 +469,36 @@ body.evolving #board {
 .evolve-log {
   flex: 1;
   min-height: 0;
-  margin: 0;
   padding: 8px 12px;
   overflow: auto;
   color: #4a4a45;
+}
+
+.evolve-log > pre {
+  margin: 0;
   font: 11px/1.5 ui-monospace, Consolas, monospace;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.evolve-prompt {
+  margin: 4px 0;
+  border: 1px solid #e4dcf7;
+  border-radius: 6px;
+  background: #faf8fe;
+  font-size: 12px;
+}
+
+.evolve-prompt > summary {
+  padding: 4px 8px;
+  color: #6d52b8;
+  cursor: pointer;
+}
+
+.evolve-prompt > .md {
+  padding: 0 10px 8px;
+  border-top: 1px solid #ece6f9;
+  overflow-wrap: break-word;
 }
 
 .evolve-hint {

@@ -405,8 +405,9 @@ export function createApi(initialRoot) {
       if (route === '/api/evolve/watch') {
         const status = evolver.status()
         const log = evolver.readLog(body.id, Number(body.from) || 0)
+        const prompts = evolver.readPrompts(body.id, Number(body.prompts) || 0)
         // pi 正写到一半解析不了就给 null
-        return send(res, 200, { status, log, archive: root ? await readArchive(root).catch(() => null) : null })
+        return send(res, 200, { status, log, prompts, archive: root ? await readArchive(root).catch(() => null) : null })
       }
       if (route === '/api/run') return send(res, 200, await runner.start({ id: body.id, mode: body.mode }))
       if (route.startsWith('/api/run/') && route.endsWith('/stop')) {

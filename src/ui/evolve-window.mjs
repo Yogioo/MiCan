@@ -1,8 +1,12 @@
 // 进化面板：浮在画布右边。上面是自动进化的开关和条件、进化提示词、「立即进化」、进化记录（ADR-0024），
-// 下面滚动显示过程（诊断、pi 每一轮、校验）；点一条记录，下面换成那次的说明、改动的文件和过程。
+// 下面滚动显示过程（诊断、pi 每一轮、校验），每轮交给 pi 的提示词折叠在那一轮前面；点一条记录，下面换成那次的说明、改动的文件和过程。
 // 进化开始时自己弹出来，做完留着最后那句，点 × 才关。关掉时画布上「进化改过」的标记一并收掉。
+import { renderMarkdown } from './markdown.mjs'
 import { isActLine } from './nodes.mjs'
 import { request } from './workspace-dialog.mjs'
+
+// 过程里的 {"prompt":N}：第 N 份提示词插在这儿
+const promptAt = (row) => Number(row.trim().match(/^\{"prompt":(\d+)\}$/)?.[1]) || 0
 
 const BY = { manual: '手动', runs: '攒够运行', streak: '连败', daily: '每天定时', undo: '撤销' }
 
@@ -31,7 +35,7 @@ export function mountEvolveWindow({ getState, actions, onClose }) {
     '<div class="evolve-actions"><span class="evolve-error"></span><button type="button" class="evolve-now primary">立即进化</button></div>' +
     '<div class="evolve-records"></div>' +
     '</div>' +
-    '<pre class="evolve-log"></pre>'
+    '<div class="evolve-log"></div>'
   document.body.append(el)
   const $ = (selector) => el.querySelector(selector)
   const phase = $('.evolve-phase')
@@ -67,21 +71,57 @@ export function mountEvolveWindow({ getState, actions, onClose }) {
 
   // 动作行是给诊断扩展读的，不铺出来；块边界可能切在一行中间，攒到换行再判
   let pending = ''
+  let prompts = []
+  let tail = null // 最后那段纯文字：新来的字接在它后面，遇到提示词另起一段
 
   function reset() {
     pending = ''
+    prompts = []
+    tail = null
     body.textContent = ''
   }
 
-  function append(text) {
+  function write(text) {
+    if (!tail) {
+      tail = document.createElement('pre')
+      body.append(tail)
+    }
+    tail.textContent += text
+  }
+
+  function addPrompt(n) {
+    const box = document.createElement('details')
+    box.className = 'evolve-prompt'
+    const title = document.createElement('summary')
+    title.textContent = `第 ${n} 轮交给 pi 的提示词`
+    const text = document.createElement('div')
+    text.className = 'md'
+    text.innerHTML = renderMarkdown(prompts[n - 1] ?? '')
+    box.append(title, text)
+    body.append(box)
+    tail = null
+  }
+
+  function append(text, more = []) {
+    prompts.push(...more)
     if (!text) return
     const rows = `${pending}${text}`.split('\n')
     pending = rows.pop()
-    const shown = rows.filter((row) => !isActLine(row))
-    if (!shown.length) return
     // 看着底部时跟着滚；往上翻了就别拽回去
     const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24
-    body.textContent += `${shown.join('\n')}\n`
+    let run = []
+    for (const row of rows) {
+      if (isActLine(row)) continue
+      const n = promptAt(row)
+      if (!n) {
+        run.push(row)
+        continue
+      }
+      if (run.length) write(`${run.join('\n')}\n`)
+      run = []
+      addPrompt(n)
+    }
+    if (run.length) write(`${run.join('\n')}\n`)
     if (atBottom) body.scrollTop = body.scrollHeight
   }
 
@@ -95,7 +135,10 @@ export function mountEvolveWindow({ getState, actions, onClose }) {
       return
     }
     reset()
-    append(`${detail.show || entry.message}\n\n── 过程 ──\n${detail.log}\n`)
+    const given = detail.prompts ?? []
+    // 以前的过程里没有提示词的标记：放在过程前面
+    const marks = detail.log.split('\n').some((row) => promptAt(row)) ? '' : given.map((_, i) => `{"prompt":${i + 1}}\n`).join('')
+    append(`${detail.show || entry.message}\n\n${marks}── 过程 ──\n${detail.log}\n`, given)
     body.scrollTop = 0
   }
 

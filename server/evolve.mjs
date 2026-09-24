@@ -292,14 +292,15 @@ async function validate(root, sha, { settings, onLog }) {
 export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterward }) {
   let current = null
   let last = null
-  // 最近这一次的过程：进化窗口按偏移量来取新增的那段
-  let log = { id: 0, text: '' }
+  // 最近这一次的过程：进化窗口按偏移量来取新增的那段。prompts 是每轮交给 pi 的提示词，过程里的 {"prompt":N} 标出它插在哪
+  let log = { id: 0, text: '', prompts: [] }
   // 自动触发的条件满足了、在等链跑完：{ by, root }
   let pending = null
   let dailyTimer = null
 
   const status = () => ({ active: Boolean(current), phase: current?.phase ?? '', startedAt: current?.startedAt ?? null, logId: log.id, last })
   const readLog = (id, from = 0) => (id === log.id ? log.text.slice(from) : log.text)
+  const readPrompts = (id, from = 0) => (id === log.id ? log.prompts.slice(from) : log.prompts)
 
   async function ready() {
     const root = getRoot()
@@ -315,7 +316,7 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
   function begin(root, { by, hint, verb }, work) {
     const at = Date.now()
     current = { startedAt: at, phase: '' }
-    log = { id: at, text: '' }
+    log = { id: at, text: '', prompts: [] }
     const dir = path.join(root, EVOLVE_LOG_DIR)
     const ctx = {
       root,
@@ -387,12 +388,15 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
     const flags = ['--留会话', 'false']
     if (settings.evolveProvider) flags.push('--provider', quote(settings.evolveProvider))
     if (settings.evolveModel) flags.push('--model', quote(settings.evolveModel))
-    const promptFile = path.join(dir, `${at}-prompt.md`)
     const recent = await recentChanges(root)
     let failure = ''
     for (let attempt = 1; attempt <= MAX_TRIES; attempt += 1) {
       phase(`pi 第 ${attempt} 次`)
-      await fs.writeFile(promptFile, promptOf({ hint, diagnosis, recent, failure }), 'utf8')
+      const promptFile = path.join(dir, `${at}-prompt-${attempt}.md`)
+      const prompt = promptOf({ hint, diagnosis, recent, failure })
+      await fs.writeFile(promptFile, prompt, 'utf8')
+      log.prompts.push(prompt)
+      onLog(`${JSON.stringify({ prompt: log.prompts.length })}\n`)
       const pi = await runScript(`node ${quote(PI)} --prompt ${quote(promptFile)} ${flags.join(' ')}`, { cwd: root, settings, onLog })
       if (!pi.data?.ok) {
         await rollback(root, sha)
@@ -510,7 +514,13 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
     if (!entry) throw new Error('没有这条进化记录')
     const show = entry.commit ? (await git(root, ['show', '--stat', '--format=%B', entry.commit])).out : ''
     const text = entry.log ? await fs.readFile(path.join(root, EVOLVE_LOG_DIR, path.basename(entry.log)), 'utf8').catch(() => '') : ''
-    return { entry, show, log: text }
+    // 每轮一份 <at>-prompt-<N>.md；以前只留最后一轮的 <at>-prompt.md
+    const names = (await fs.readdir(path.join(root, EVOLVE_LOG_DIR)).catch(() => []))
+      .map((name) => ({ name, n: name === `${entry.at}-prompt.md` ? 0 : Number(name.match(new RegExp(`^${entry.at}-prompt-(\\d+)\\.md$`))?.[1]) }))
+      .filter((item) => Number.isInteger(item.n))
+      .sort((a, b) => a.n - b.n)
+    const prompts = await Promise.all(names.map(({ name }) => fs.readFile(path.join(root, EVOLVE_LOG_DIR, name), 'utf8').catch(() => '')))
+    return { entry, show, log: text, prompts }
   }
 
   // ---- 自动触发 ----
@@ -579,6 +589,7 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
     sync,
     status,
     readLog,
+    readPrompts,
     active: () => Boolean(current),
   }
 }
