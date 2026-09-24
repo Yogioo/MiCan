@@ -16,3 +16,12 @@ export function parseTokens(text) {
   }
   return [...found.values()]
 }
+
+// 人填进 [[名字]] 的必须看得出是路径。没有分隔符、也没有后缀的一段话，就不是。
+export function looksLikePath(value) {
+  const text = String(value ?? '').trim()
+  if (!text || /\n/.test(text)) return false
+  if (/^(?:[a-zA-Z]:[\\/]|[\\/])/.test(text)) return true
+  if (/[\\/]/.test(text)) return true
+  return /\.[A-Za-z0-9]+$/.test(text)
+}

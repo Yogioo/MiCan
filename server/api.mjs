@@ -159,13 +159,21 @@ export function createApi(initialRoot) {
     // 缓存目录是 MiCan 自己独占的，直接按目录清：存档没记上的孤儿也一并收掉。
     // docs 里混着用户自己放的文件，所以那边只能按「上次存档说是我的」来清。
     // 两种后缀各清一遍：哪一份没跟上就删哪一份，别留半份。
+    // 出口边车是 <节点id>.<出口>.out，算那个节点的，不是孤儿 —— 只认整段文件名会把
+    // [[ ]] 还要读的那份清掉。
     const cacheDir = path.join(root, CACHE_DIR)
     for (const [ext, items] of [[CACHE_EXT, cache], [LOG_EXT, logs]]) {
       const keep = new Set(items.map((item) => item.id))
+      const kept = (stem) => {
+        if (keep.has(stem) || runner.owns(stem)) return true
+        const at = stem.indexOf('.')
+        if (at < 0) return false
+        const nodeId = stem.slice(0, at)
+        return keep.has(nodeId) || runner.owns(nodeId)
+      }
       for (const name of await fs.readdir(cacheDir).catch(() => [])) {
         if (!name.endsWith(ext)) continue
-        const id = name.slice(0, -ext.length)
-        if (keep.has(id) || runner.owns(id)) continue
+        if (kept(name.slice(0, -ext.length))) continue
         await fs.rm(path.join(cacheDir, name), { force: true })
       }
     }
@@ -304,7 +312,7 @@ export function createApi(initialRoot) {
         return answer(await writeSettings(patch))
       }
       if (route === '/api/browse') return send(res, 200, await browse(body.path))
-      // 菜单里的扩展：扫工作文件夹的 extensions/，只读清单的 yaml 头（ADR-0013）
+      // 菜单里的扩展：扫工作文件夹的 extensions/，读清单（yaml 头给菜单，正文给人看）
       if (route === '/api/extensions') {
         return send(res, 200, root ? await scanExtensions(root) : { items: [], problems: [] })
       }

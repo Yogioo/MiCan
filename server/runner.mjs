@@ -1,6 +1,7 @@
 // 运行器：跑一个节点，或从入口走完整条链（ADR-0006）。
 // 前端只发起和订阅，链在这儿跑 —— 页面关掉也照跑（ADR-0005 的定时触发以后也从这里进）。
 // 它自己读画布、按数据边拼命令、把结果写盘；graph / chain / vars / pick / paths 都是纯 ESM，直接共用。
+import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { routeFrom } from '../src/core/chain.mjs'
@@ -18,6 +19,22 @@ import { commandOf } from './extensions.mjs'
 const KEEP_DONE_MS = 2 * 60 * 1000
 // 提示里别把一整份输出塞进去
 const clip = (text) => (text.length > 24 ? `${text.slice(0, 24)}…` : text)
+
+// `[[名字]]` 框里填的、清单 defaults 里写的：按路径找文件。绝对路径照收；相对的先看运行目录，再看工作文件夹。
+function locateTypedFile(file, workspace, cwd) {
+  const wanted = String(file ?? '').trim()
+  if (!wanted) return ''
+  const seen = new Set()
+  const candidates = path.isAbsolute(wanted)
+    ? [path.resolve(wanted)]
+    : [cwd, workspace].filter(Boolean).map((root) => path.resolve(root, wanted))
+  for (const item of candidates) {
+    if (seen.has(item)) continue
+    seen.add(item)
+    if (existsSync(item)) return item
+  }
+  return ''
+}
 
 export function createRunner({ getRoot, resolveCwd, readSettings }) {
   const runs = new Map()
@@ -197,11 +214,11 @@ export function createRunner({ getRoot, resolveCwd, readSettings }) {
     } else if (!template.trim()) return { error: '这个命令节点还没有命令' }
     // 变量注入只改这一次要跑的命令，节点上的模板不动；取值是「此刻」的。
     // 框里留空、又没连线的那几个输入，拿清单里的默认值顶上 —— 所以节点上干干净净，改清单对所有引用它的节点立刻生效。
+    const cwd = await resolveCwd(runDirOf(node)) // 运行目录不存在就停在起跑线上；typed 的 [[ ]] 也按它找文件
     const { vars, errors } = collectVars(graph, id, run.root, defaults, run.board, await sourceOutputsOf(run, id))
-    const injected = applyVars(template, vars)
+    const injected = applyVars(template, vars, (file) => locateTypedFile(file, run.root, cwd))
     const problems = [...new Set([...errors, ...injected.problems])]
     if (problems.length) return { error: `变量没对上：${problems.join('；')}` }
-    const cwd = await resolveCwd(runDirOf(node)) // 运行目录不存在就停在起跑线上
 
     run.current = { nodeId: id, output: '', log: '', startedAt, child: null }
     emit(run, { t: 'step', nodeId: id, step, startedAt, targets: targets.map((item) => item.id) })

@@ -4,6 +4,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { parseRoutes } from '../src/core/inputs.mjs'
 
 export const MANIFEST = 'EXTENSION.md'
 // 扩展住在工作文件夹的 extensions 底下；节点上存的是相对工作文件夹的路径。
@@ -22,7 +23,8 @@ export const LIBRARY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.
 const NESTED = new Set(['defaults', 'outputs'])
 
 function parseManifest(text) {
-  const head = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1]
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n([\s\S]*))?/.exec(text)
+  const head = match?.[1]
   if (head === undefined) return { error: '开头没有 --- 包起来的 yaml 头' }
   const fields = {}
   const nested = { defaults: {}, outputs: {} }
@@ -52,6 +54,8 @@ function parseManifest(text) {
     defaults: nested.defaults,
     outputs: nested.outputs,
     route: fields.route ?? '',
+    routes: parseRoutes(fields.routes),
+    docs: (match[2] ?? '').trim(),
   }
 }
 
@@ -83,6 +87,8 @@ export async function scanExtensions(root) {
         defaults: meta.defaults,
         outputs: meta.outputs,
         route: meta.route,
+        routes: meta.routes,
+        docs: meta.docs,
       }
     }
     const children = []

@@ -1,14 +1,25 @@
 // 节点层：渲染三类节点，处理拖动、缩放、选中、编辑、右键菜单。
 import { extensionOf, moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeConst, setNodeCwd, setNodeFile, setNodePick, setNodeSchedule, setNodeText } from '../core/graph.mjs'
 import { CMD_BAR_H, INPUT_ROW } from '../core/geometry.mjs'
-import { findExtension, inputsOf, outputsOf, wiredNames } from '../core/inputs.mjs'
+import { findExtension, inputsOf, outputsOf, routeNameOf, routesOf, wiredNames } from '../core/inputs.mjs'
+import { looksLikePath } from '../core/tokens.mjs'
 import { describeSchedule, dailyText, intervalText, nextFireAt, parseSchedule, scheduleFields } from '../core/schedule.mjs'
 import { board, canvas, machine } from '../core/settings.mjs'
 import { toWorld } from '../core/view.mjs'
 import { renderMarkdown } from './markdown.mjs'
+import { closeExtDocs, extDocsOpen, hidePortTip, mountPortTips, openExtDocs } from './ext-docs.mjs'
+import { noteOf } from '../core/ext-help.mjs'
 
 // 本机绝对路径：盘符（C:\、C:/）、UNC（\\server）、或 / 开头；其余当相对工作文件夹
 const isAbsolutePath = (value) => /^(?:[a-zA-Z]:[\\/]|[\\/])/.test(value)
+
+function markFileConst(field, check, raw) {
+  const text = String(raw ?? '').trim()
+  const bad = Boolean(check && text && !looksLikePath(text))
+  field.classList.toggle('bad', bad)
+  if (bad) field.dataset.tip = '这一路要路径，不是正文'
+  else delete field.dataset.tip
+}
 
 const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`
 // 脚上的时刻：默认只到分；秒级定时器要看到秒，不然一秒响一次也像什么都没发生
@@ -18,6 +29,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
   const layer = document.getElementById('nodes')
   const viewport = document.getElementById('viewport')
   const elements = new Map()
+  mountPortTips(viewport)
 
   function render(state) {
     const alive = new Set()
@@ -95,7 +107,18 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     else if (runDir) notes.push(`运行目录：${runDir}（全局）`)
     const resolved = node.result?.command
     if (resolved && resolved !== node.command) notes.push(`实际执行：${resolved}`)
+    const routeNames = routesOf(node, state.extensions)
+    const routeKey = routeNameOf(node, state.extensions)
+    if (routeNames.length) notes.push(`选路${routeKey ? `「${routeKey}」` : ''}：${routeNames.join('、')}`)
     cmd.title = notes.join('\n')
+    const execOut = el.querySelector('.port-exec:not(.port-exec-in)')
+    setHelp(
+      execOut,
+      '',
+      routeNames.length
+        ? `选路${routeKey ? `「${routeKey}」` : ''}：${routeNames.join('、')}。边上写其中一个，空标签是兜底`
+        : '执行端口：连下一个会跑的节点',
+    )
 
     // 运行中看增量、跑完看结果，都没有就空着 —— 命令始终在上面那条里
     const content = bodyOutput(node, state)
@@ -154,9 +177,14 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       const fromBoard = (state.slots?.[row.dataset.name] ?? board[row.dataset.name] ?? '').split('\n')[0]
       const fallback = declared?.defaults?.[row.dataset.name] ?? ''
       field.disabled = fromEdge
-      field.placeholder = fromEdge ? '由连线提供' : fromBoard ? `面板 ${fromBoard}` : fallback ? `默认 ${fallback}` : '填值'
+      const item = inputs.find((entry) => entry.name === row.dataset.name)
+      field.placeholder = fromEdge ? '由连线提供' : fromBoard ? `面板 ${fromBoard}` : fallback ? `默认 ${fallback}` : item?.file ? '路径' : '填值'
       const wanted = fromEdge ? '' : node.consts?.[row.dataset.name] ?? ''
       if (document.activeElement !== field && field.value !== wanted) field.value = wanted
+      markFileConst(field, Boolean(item?.file && !fromEdge), document.activeElement === field ? field.value : wanted)
+      const note = noteOf(declared?.docs, row.dataset.name)
+      setHelp(row.querySelector('.node-port'), note, `输入「${row.dataset.name}」：从这里拉到别的节点上，或者从别处连过来`)
+      setHelp(row.querySelector('.node-port-name'), note, item?.file ? '这一路要路径，不是正文' : '')
     }
     // 端口区把正文往下挤；没有输入就还回去，别留一条白缝
     el.querySelector('.node-body').style.top = inputs.length ? `${CMD_BAR_H + inputs.length * INPUT_ROW.step}px` : ''
@@ -173,6 +201,21 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       for (const [index, name] of names.entries()) box.append(outputRow(name, index))
       el._outPorts = signature
     }
+    const declared = node.extension ? findExtension(state.extensions?.items, node.extension) : null
+    for (const row of box.children) {
+      const note = noteOf(declared?.docs, row.dataset.name)
+      const fallback = `出口「${row.dataset.name}」：从这里拉到下游，只送这一份字段`
+      setHelp(row.querySelector('.node-port'), note, fallback)
+      setHelp(row.querySelector('.node-port-name'), note, fallback)
+    }
+  }
+
+  function setHelp(target, note, fallback) {
+    if (!target) return
+    const text = note || fallback
+    target.title = ''
+    if (text) target.dataset.tip = text
+    else delete target.dataset.tip
   }
 
   function outputRow(name, index) {
@@ -189,8 +232,6 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     port.dataset.kind = 'data'
     port.dataset.fromPort = name
     port.dataset.index = String(index)
-    port.title = `出口「${name}」：从这里拉到下游，只送这一份字段`
-
     row.append(label, port)
     return row
   }
@@ -198,7 +239,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
   // 一行输入端口：圆点（拉线、接线的抓手）、名字、填值的框
   function portRow(el, item, index) {
     const row = document.createElement('div')
-    row.className = 'node-port-row'
+    row.className = item.file ? 'node-port-row is-file' : 'node-port-row'
     row.dataset.name = item.name
 
     const port = document.createElement('div')
@@ -206,19 +247,17 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     port.dataset.kind = 'data'
     port.dataset.name = item.name
     port.dataset.index = String(index)
-    port.title = `输入「${item.name}」：从这里拉到别的节点上，或者从别处连过来`
-
     const name = document.createElement('span')
     name.className = 'node-port-name'
     name.textContent = item.name
-    if (item.file) name.title = '这一路要的是文件路径（[[名字]]），不是正文'
 
     const value = document.createElement('input')
     value.className = 'node-port-value'
     value.spellcheck = false
-    value.placeholder = '填值'
+    value.placeholder = item.file ? '路径' : '填值'
     // 在框里打字别触发全局快捷键（Delete 删节点那一套）
     value.addEventListener('keydown', (event) => event.stopPropagation())
+    value.addEventListener('input', () => markFileConst(value, item.file, value.value))
     value.addEventListener('change', () => {
       const current = getState().graph.nodes.find((entry) => entry.id === el.dataset.id)
       if (current) update((draft) => setNodeConst(draft.graph, current.id, item.name, value.value))
@@ -370,7 +409,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
   // 连接点：都会落在节点顶部标题条那一条水平线上 —— 执行边从右端出去、从左端进来，
   // 链看起来是一条贯的线。会跑的节点还有一个数据端口（按比例落在右侧）；
   // 入口和定时器只有执行出边。
-  const EXEC_PORT = '<div class="node-port port-exec" data-kind="exec" title="执行端口：连下一个会跑的节点"></div>'
+  const EXEC_PORT = '<div class="node-port port-exec" data-kind="exec"></div>'
   // 左端的「入」圆点只看不拉：连线还是从上游节点的出端口拉过来。
   const EXEC_IN = '<div class="node-port port-exec port-exec-in" title="执行入口：上一步从这儿进来"></div>'
   const RUN_PORTS =
@@ -407,6 +446,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
             : node.kind === 'command'
               ? `<div class="node-cmd"></div><div class="node-inputs"></div><div class="node-outputs"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
               : `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
+
+    const execOut = el.querySelector('.port-exec:not(.port-exec-in)')
+    if (execOut) execOut.dataset.tip = '执行端口：连下一个会跑的节点'
 
     if (node.kind === 'timer') {
       const form = el.querySelector('.timer-form')
@@ -587,6 +629,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     const nodeEl = event.target.closest('.node')
     if (!nodeEl && event.target.closest('.edge-hit')) return // 边：留给浏览器的原生菜单
     event.preventDefault()
+    hidePortTip()
 
     if (!nodeEl) {
       const world = toWorld(getState().view, event.clientX, event.clientY)
@@ -609,6 +652,8 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     if (node.kind === 'command') {
       items.push({ label: '运行命令', run: () => onRunCommand(node.id) })
       items.push({ label: '设置运行目录…', run: () => onSetRunDir(node.id) })
+      const ext = extensionOf(node) && findExtension(getState().extensions?.items, node.extension)
+      if (ext) items.push({ label: '说明文档', run: () => openExtDocs({ title: ext.label, description: ext.description, docs: ext.docs, x: event.clientX, y: event.clientY }) })
     } else if (node.kind === 'extract') {
       // 提取节点没进程可跑，能做的只有「按现在的值重新取一次」
       items.push({ label: '运行提取', run: () => onRunCommand(node.id) })
@@ -630,7 +675,10 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     if (!menu.hidden && !event.target.closest('#menu')) closeMenu()
   }, true)
   window.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeMenu()
+    if (event.key !== 'Escape') return
+    if (!menu.hidden) closeMenu()
+    else if (extDocsOpen()) closeExtDocs()
+    hidePortTip()
   })
 
   // ---- 拖动 / 缩放 / 选中 ----
@@ -717,6 +765,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     const port = event.target.closest('.node-port')
     if (port) {
       event.stopPropagation()
+      hidePortTip()
       const index = Number(port.dataset.index ?? 0)
       const extras = port.classList.contains('port-in')
         ? { into: true, label: port.dataset.name ?? '', index }

@@ -4,7 +4,7 @@
 import { dataInto, findNode } from './graph.mjs'
 import { boardFile, cacheFile, portFile } from './paths.mjs'
 import { pickValue } from './pick.mjs'
-import { TOKEN } from './tokens.mjs'
+import { TOKEN, looksLikePath } from './tokens.mjs'
 
 // 节点上的路径是相对工作文件夹的 posix 路径，拼成这台机器上的绝对路径。
 // 运行目录可能不在工作文件夹里，所以路径必须绝对才有得跑。
@@ -44,10 +44,10 @@ export function collectVars(graph, id, workspace, defaults = {}, board = {}, sou
   const vars = new Map()
   const errors = []
   // 节点上填的常量先放进来：同一个名字既有常量又接了边时，边说了算（界面上那个框也会让位）。
-  // 常量一个字符串两处用 —— `{{名字}}` 拿它当正文，`[[名字]]` 拿它当路径，各取各的。
+  // typed：这段字是人填的，不是来路那份文件。`[[名字]]` 必须能在盘上找到它。
   for (const [name, value] of Object.entries(findNode(graph, id)?.consts ?? {})) {
     const text = String(value ?? '').trim()
-    if (text) vars.set(name, { text, file: text })
+    if (text) vars.set(name, { text, file: text, typed: true })
   }
   const fromEdges = new Set()
   for (const edge of dataInto(graph, id)) {
@@ -95,13 +95,16 @@ export function collectVars(graph, id, workspace, defaults = {}, board = {}, sou
   for (const [name, raw] of Object.entries(defaults)) {
     const text = String(raw ?? '').trim()
     if (!text || vars.has(name) || fromEdges.has(name)) continue
-    vars.set(name, { text, file: text })
+    vars.set(name, { text, file: text, typed: true })
   }
   return { vars, errors }
 }
 
+const clip = (text) => (String(text).length > 24 ? `${String(text).slice(0, 24)}…` : String(text))
+
 // 只替换声明过的名字：没有对应入边的 token 原样留下，攒进 problems 由调用方报错。
-export function applyVars(command, vars) {
+// locateFile：给 typed 的 `[[名字]]` 找盘上的文件。找不到就当没填对。不传就不验。
+export function applyVars(command, vars, locateFile) {
   const problems = []
   const pick = (raw, name, field) => {
     const entry = vars.get(name)
@@ -109,7 +112,21 @@ export function applyVars(command, vars) {
       problems.push(`${raw} 既没有入边也没有填值`)
       return raw
     }
-    const value = entry[field]
+    let value = entry[field]
+    if (field === 'file' && entry.typed) {
+      if (!looksLikePath(value)) {
+        problems.push(`${raw} 要的是路径，「${clip(value || '')}」不是路径。把文字放到文本节点再连过来`)
+        return raw
+      }
+      if (typeof locateFile === 'function') {
+        const found = locateFile(value)
+        if (!found) {
+          problems.push(`${raw} 要的是路径，「${clip(value)}」当路径找不到这份文件。把文字放到文本节点再连过来`)
+          return raw
+        }
+        value = found
+      }
+    }
     // 值直接拼进命令行，没有引号可用（cmd 和 sh 的引号规则不一样），所以只收单行
     if (!value) {
       problems.push(`${raw} 的${field === 'file' ? '缓存文件还没落盘' : '文本节点是空的'}`)

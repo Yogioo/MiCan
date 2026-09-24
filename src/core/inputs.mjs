@@ -28,6 +28,25 @@ export function outputsOf(node, extensions) {
   return item?.outputs ? Object.keys(item.outputs) : []
 }
 
+// 清单里写出的选路值（`routes: 有单, 无单`）。只给人看、给边上当提示，比对仍是标签全等，不锁死。
+export function parseRoutes(text) {
+  return String(text ?? '')
+    .split(/[,，、]/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+export function routesOf(node, extensions) {
+  if (!node?.extension) return []
+  const item = findExtension(extensions?.items, node.extension)
+  return item?.routes ?? []
+}
+
+export function routeNameOf(node, extensions) {
+  if (!node?.extension) return ''
+  return findExtension(extensions?.items, node.extension)?.route ?? ''
+}
+
 // 哪些输入已经有连线了。有连线的端口不看节点上填的常量 —— 边是更明确的那个来源，
 // 界面上那个框也会让位（变灰、写「由连线提供」）。
 export const wiredNames = (graph, id) =>

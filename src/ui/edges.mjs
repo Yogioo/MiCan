@@ -1,7 +1,7 @@
 // 边层：把边画成 SVG 曲线，处理建边、选中、标签编辑。
 import { addEdge, connectProblem, findNode, labelProblem, setEdgeLabel } from '../core/graph.mjs'
 import { edgeGeometry, inputPortPoint, outputPortPoint, portPoint, previewPath } from '../core/geometry.mjs'
-import { outputsOf, sourcePortIndex, targetPortIndex } from '../core/inputs.mjs'
+import { outputsOf, routesOf, sourcePortIndex, targetPortIndex } from '../core/inputs.mjs'
 import { toWorld } from '../core/view.mjs'
 
 const SVG_NS = 'http://www.w3.org/2000/svg'
@@ -114,7 +114,10 @@ export function mountEdges({ getState, update, onError }) {
     const input = document.createElement('input')
     input.className = 'edge-input'
     input.value = original
-    input.placeholder = edge.kind === 'exec' ? '匹配什么值（留空 = 兜底）' : '变量名'
+    const routes = edge.kind === 'exec' ? routesOf(findNode(getState().graph, edge.from), getState().extensions) : []
+    input.placeholder = edge.kind === 'exec'
+      ? (routes.length ? `${routes.join(' / ')}（空 = 兜底）` : '匹配什么值（留空 = 兜底）')
+      : '变量名'
     entry.editing = true
     entry.label.hidden = false // 空标签的边本来被藏起来，编辑时要让它出来
     entry.label.classList.remove('empty')
