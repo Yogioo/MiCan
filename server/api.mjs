@@ -36,7 +36,14 @@ export function createApi(initialRoot) {
   // 进化期间（ADR-0022）：不起新的运行、定时器跳过、前端落盘不收
   const evolving = () => evolver.active()
   // 跑链的人：它读盘上的画布、自己走图、自己把结果写盘。它占着哪个文件，下面的 save 就跳过哪个。
-  const runner = createRunner({ getRoot: () => root, resolveCwd, readSettings, blocked: () => (evolving() ? '正在进化，等它做完再跑' : '') })
+  const runner = createRunner({
+    getRoot: () => root,
+    resolveCwd,
+    readSettings,
+    blocked: () => (evolving() ? '正在进化，等它做完再跑' : ''),
+    onRecord: (entry) => evolver.recorded(entry),
+    onIdle: () => evolver.idle(),
+  })
   // 定时器：后端自己看着时刻表，到点让运行器从定时器出发跑链（ADR-0005）。
   // 时刻表在盘上的 mican.json 里，所以每次落盘与每次换工作文件夹之后重新装一次。
   const scheduler = createScheduler({
@@ -45,10 +52,19 @@ export function createApi(initialRoot) {
     isRunning: (headId) => runner.isRunning(headId),
     isPaused: evolving,
   })
-  const evolver = createEvolver({ getRoot: () => root, readSettings, stopRuns: () => runner.stopAll(), afterward: () => scheduler.sync() })
+  const evolver = createEvolver({
+    getRoot: () => root,
+    readSettings,
+    stopRuns: () => runner.stopAll(),
+    isIdle: () => !runner.list().some((run) => run.active),
+    afterward: () => scheduler.sync(),
+  })
   // 起来的时候盘上可能已经有一份画布（环境变量指的文件夹）：先把时刻表装上。
   // 不然要等第一次落盘或打开文件夹，定时器才会开始响 —— 在那之前界面看上去是死的。
-  if (root) scheduler.sync()
+  if (root) {
+    scheduler.sync()
+    evolver.sync()
+  }
 
   function inside(relative) {
     const target = path.resolve(root, relative)
@@ -82,6 +98,7 @@ export function createApi(initialRoot) {
       await seedAgentDocs(target)
       root = target
       await scheduler.sync() // 新文件夹里没有画布，等于把上一份的时刻表全撤掉
+      await evolver.sync()
       return { root, canvas: null, cache: {}, logs: {}, slots: {}, recent: await remember(target) }
     }
     const stat = await fs.stat(target).catch(() => null)
@@ -92,6 +109,7 @@ export function createApi(initialRoot) {
       .then((raw) => JSON.parse(raw))
       .catch(() => null) // 没有存档就是空文件夹，照样能打开
     await scheduler.sync() // 换了一份画布，时刻表跟着换
+    await evolver.sync() // 自动进化的配置跟工作文件夹走
     return { root, canvas, ...(await readCache()), slots: await readSlots(target), recent: await remember(target) }
   }
 
@@ -389,6 +407,12 @@ export function createApi(initialRoot) {
       }
       if (route === '/api/runs') return send(res, 200, { items: runner.list(), triggers: scheduler.triggers(), evolve: evolver.status() })
       if (route === '/api/evolve') return send(res, 200, await evolver.start({ hint: body.hint }))
+      // 自动进化的配置：不带 config 是读
+      if (route === '/api/evolve/config') return send(res, 200, await evolver.config(body.config))
+      if (route === '/api/evolve/history') return send(res, 200, await evolver.history())
+      if (route === '/api/evolve/record') return send(res, 200, await evolver.record(body.at))
+      if (route === '/api/evolve/undo') return send(res, 200, await evolver.undo({ commit: body.commit, reason: body.reason }))
+      if (route === '/api/evolve/restore') return send(res, 200, await evolver.restore({ commit: body.commit }))
       // 进化窗口：状态、新增的那段过程、盘上此刻的画布（pi 边改边看）
       if (route === '/api/evolve/watch') {
         const status = evolver.status()

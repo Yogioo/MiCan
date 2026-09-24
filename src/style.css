@@ -330,7 +330,7 @@ body.evolving #board {
   display: flex;
   flex-direction: column;
   width: min(460px, 45vw);
-  height: 55vh;
+  height: 80vh;
   border: 1px solid #e4e4df;
   border-radius: 8px;
   background: #fff;
@@ -372,8 +372,103 @@ body.evolving #board {
   cursor: pointer;
 }
 
+.evolve-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #efefe9;
+  font-size: 12px;
+}
+
+.evolve-auto {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.evolve-auto input[type='number'] {
+  width: 56px;
+}
+
+.evolve-note {
+  color: #7b7b74;
+}
+
+.evolve-panel .evolve-hint {
+  min-height: 56px;
+}
+
+.evolve-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.evolve-error {
+  flex: 1;
+  color: #c0392b;
+}
+
+.evolve-panel button,
+.evolve-record button {
+  padding: 3px 10px;
+  border: 1px solid #e4e4df;
+  border-radius: 6px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.evolve-panel button.primary {
+  border-color: #d9ccf5;
+  background: #f3eefc;
+}
+
+.evolve-panel button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.evolve-records {
+  max-height: 140px;
+  overflow: auto;
+  color: #7b7b74;
+}
+
+.evolve-record {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  color: #4a4a45;
+}
+
+.evolve-record.failed {
+  color: #9a9a92;
+}
+
+.evolve-record-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.evolve-record-text:hover {
+  text-decoration: underline;
+}
+
+.evolve-record button {
+  padding: 1px 6px;
+}
+
 .evolve-log {
   flex: 1;
+  min-height: 0;
   margin: 0;
   padding: 8px 12px;
   overflow: auto;

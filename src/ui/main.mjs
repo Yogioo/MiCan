@@ -26,7 +26,7 @@ import { mountEvolveWindow } from './evolve-window.mjs'
 import { mountNodes } from './nodes.mjs'
 import { askSettings } from './settings-dialog.mjs'
 import { mountToolbar } from './toolbar.mjs'
-import { askEvolveHint, askRunDir, askWorkspace } from './workspace-dialog.mjs'
+import { askRunDir, askUndoReason, askWorkspace, confirmRestore } from './workspace-dialog.mjs'
 
 export const state = {
   view: createView(),
@@ -292,6 +292,7 @@ async function loadWorkspace(path) {
   }
   state.slots = response.slots ?? {}
   adoptWorkspace(response.root, restored ?? { graph: createGraph(), view: state.view })
+  evolveWindow.refresh() // 进化的配置和记录跟工作文件夹走
   return restored
 }
 
@@ -525,16 +526,32 @@ async function pollRuns() {
 
 // ---- 进化 ----
 
-async function startEvolve() {
-  if (!state.workspace || state.evolve?.active) return
-  const hint = await askEvolveHint()
-  if (hint === null) return
-  await flush() // 诊断和 pi 读的是盘上那份
+// 进化、撤销、还原都一样：先把画布落盘（诊断、pi、git 读的都是盘上那份），然后跟着看过程
+async function beginEvolve(route, body) {
+  await flush()
   try {
-    watchEvolve(await api('/api/evolve', { hint }))
+    watchEvolve(await api(route, body))
   } catch (error) {
     showMessage(error.message)
   }
+}
+
+async function startEvolve(hint) {
+  if (!state.workspace || state.evolve?.active) return
+  await beginEvolve('/api/evolve', { hint })
+}
+
+async function undoEvolve(entry) {
+  if (!state.workspace || state.evolve?.active) return
+  const reason = await askUndoReason(entry.commit)
+  if (reason === null) return
+  await beginEvolve('/api/evolve/undo', { commit: entry.commit, reason })
+}
+
+async function restoreEvolve(entry, lost) {
+  if (!state.workspace || state.evolve?.active) return
+  if (!(await confirmRestore(entry.commit, lost))) return
+  await beginEvolve('/api/evolve/restore', { commit: entry.commit })
 }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms))
@@ -947,8 +964,12 @@ const nodes = mountNodes({
   onNewExtensionNode: (world, extension) => createNodeAt(world, 'command', { extension }),
   onSetRunDir: setRunDir,
 })
-const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, evolve: startEvolve, start: startFromEntries, stop: stopRunning } })
-const evolveWindow = mountEvolveWindow({ onClose: closeEvolveWindow })
+const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, evolve: () => evolveWindow.toggle(), start: startFromEntries, stop: stopRunning } })
+const evolveWindow = mountEvolveWindow({
+  getState: () => state,
+  actions: { evolve: startEvolve, undo: undoEvolve, restore: restoreEvolve },
+  onClose: closeEvolveWindow,
+})
 const boardPanel = mountBoard({
   getState: () => state,
   onChange: changeBoard,

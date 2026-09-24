@@ -36,7 +36,8 @@ function locateTypedFile(file, workspace, cwd) {
   return ''
 }
 
-export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () => '' }) {
+// onRecord：往 runs.jsonl 追加了一行；onIdle：最后一条在跑的也收了尾。自动进化靠这两处看条件（ADR-0024）。
+export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () => '', onRecord = async () => {}, onIdle = () => {} }) {
   const runs = new Map()
   let seq = 0
   const nextId = () => `r${Date.now().toString(36)}${(seq += 1).toString(36)}`
@@ -65,6 +66,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     emit(run, { t: 'end', outcome, message, steps: run.step })
     run.subscribers.clear()
     setTimeout(() => runs.delete(run.id), KEEP_DONE_MS).unref()
+    if (![...runs.values()].some((item) => item.active)) onIdle()
   }
 
   const failMessage = (run, step, result) =>
@@ -326,6 +328,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     // .log 存不下来，这一行照记，只是不带 log
     if (result.log) entry.log = await keepLog(run.root, at, id, result.log).catch(() => undefined)
     await fs.appendFile(path.join(run.root, RUNS_FILE), `${JSON.stringify(entry)}\n`, 'utf8')
+    await onRecord(entry)
   }
 
   async function keepLog(root, at, id, log) {
