@@ -6,10 +6,8 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-permissions:
-  contents: write # 建 release、传文件
-
 jobs:
+  # 四个平台各跑各的，只出包，不碰 release
   pack:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -23,8 +21,8 @@ jobs:
           - { os: macos-15-intel, target: mac-x64 }
           - { os: ubuntu-latest, target: linux-x64 }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -34,13 +32,26 @@ jobs:
       - run: node scripts/pack.mjs ${{ matrix.target }}
         env:
           NODE_VERSION: v24.12.0 # 自带的那份运行时钉死，免得每次发版都不一样
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: MiCan-${{ matrix.target }}
           path: release/*
           if-no-files-found: error
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+
+  # 发布单独做一次。放进矩阵里的话四个 job 各发一遍，同一个 release 的正文会被追加四次
+  # （`generate_release_notes` 每跑一次追加一段），加一个平台就多一段。
+  release:
+    needs: pack
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 建 release、传文件
+    steps:
+      - uses: actions/download-artifact@v8
         with:
-          files: release/*
+          path: pkg
+          merge-multiple: true # 四个 artifact 摊平到一个目录，下面一句就能全带上
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: pkg/*
           generate_release_notes: true
