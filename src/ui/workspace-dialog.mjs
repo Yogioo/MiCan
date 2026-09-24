@@ -153,11 +153,12 @@ export function attachBrowser(modal, input) {
 
 // 问一个工作文件夹路径。回车或「确定」给出 { path, startup }（startup = 要不要「以后启动就打开它」），取消给 null。
 // error 用来把上一次的失败原因带回来。
+// mode：open 打开已有的 / new 新建一份空的 / create 把手上这份另存过去 —— 后两种都要一个「还不存在的文件夹」。
 export function askWorkspace({ mode, initial = '', recent = [], error = '', startup = false }) {
-  const creating = mode === 'create'
+  const fresh = mode === 'new' || mode === 'create'
   const modal = openModal({
-    title: creating ? '另存为' : '打开工作文件夹',
-    okText: creating ? '保存到这里' : '打开',
+    title: mode === 'new' ? '新建工作文件夹' : mode === 'create' ? '另存为' : '打开工作文件夹',
+    okText: mode === 'new' ? '新建' : mode === 'create' ? '保存到这里' : '打开',
   })
   modal.error.textContent = error
 
@@ -167,7 +168,7 @@ export function askWorkspace({ mode, initial = '', recent = [], error = '', star
   input.className = 'modal-path'
   input.type = 'text'
   input.spellcheck = false
-  input.placeholder = creating ? '新文件夹的绝对路径（不存在或为空）' : '工作文件夹的绝对路径'
+  input.placeholder = fresh ? '新文件夹的绝对路径（不存在或为空）' : '工作文件夹的绝对路径'
   input.value = initial
   const { browseButton, browser } = attachBrowser(modal, input)
   row.append(input, browseButton)
@@ -189,7 +190,7 @@ export function askWorkspace({ mode, initial = '', recent = [], error = '', star
   // 「以后启动时打开它」归「打开」这个动作，不归设置窗口 —— 你开哪个文件夹的时候才想得起来这件事。
   // 新建（另存为）不掺这一条：那时还没定下来要在哪儿干活。
   let remember = null
-  if (!creating) {
+  if (!fresh) {
     const label = document.createElement('label')
     label.className = 'modal-check'
     const box = document.createElement('input')

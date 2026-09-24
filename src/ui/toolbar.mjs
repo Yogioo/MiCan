@@ -14,8 +14,9 @@ export function mountToolbar({ getState, actions }) {
   const evolve = document.getElementById('btn-evolve')
 
   evolve.addEventListener('click', actions.evolve)
-  document.getElementById('btn-save-as').addEventListener('click', actions.saveAs)
+  document.getElementById('btn-new').addEventListener('click', actions.newWorkspace)
   document.getElementById('btn-open').addEventListener('click', actions.openWorkspace)
+  document.getElementById('btn-save-as').addEventListener('click', actions.saveAs)
   settings.addEventListener('click', actions.openSettings)
   document.getElementById('btn-reset').addEventListener('click', actions.resetZoom)
   start.addEventListener('click', actions.start)

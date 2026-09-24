@@ -262,6 +262,29 @@ function adoptWorkspace(root, next) {
   loadExtensions()
 }
 
+// 新建：要一个空文件夹，画布从零开始。跟「另存为」只差一句 —— 那个把手上这份整个写过去，
+// 这个不写，adopt 进去的就是空画布。
+async function newWorkspace() {
+  let initial = ''
+  let error = ''
+  for (;;) {
+    const answer = await askWorkspace({ mode: 'new', initial, recent, error })
+    if (!answer) return
+    try {
+      const response = await api('/api/workspace', { path: answer.path, mode: 'create' })
+      remember(response)
+      adoptWorkspace(response.root, { graph: createGraph(), view: state.view })
+      await saveNow() // 空的也要落一份：不落的话下次打开这里就成了「没有存档的空文件夹」
+      resetHistory()
+      showMessage('已新建工作文件夹')
+      return
+    } catch (failure) {
+      initial = answer.path // 弹窗重新开，错误写在里面，路径不用重打
+      error = `新建失败：${failure.message}`
+    }
+  }
+}
+
 async function saveAs() {
   let initial = ''
   let error = ''
@@ -981,7 +1004,7 @@ const nodes = mountNodes({
   onNewExtensionNode: (world, extension) => createNodeAt(world, 'command', { extension }),
   onSetRunDir: setRunDir,
 })
-const toolbar = mountToolbar({ getState: () => state, actions: { saveAs, openWorkspace, resetZoom, openSettings, evolve: () => evolveWindow.toggle(), start: startFromEntries, stop: stopRunning } })
+const toolbar = mountToolbar({ getState: () => state, actions: { newWorkspace, saveAs, openWorkspace, resetZoom, openSettings, evolve: () => evolveWindow.toggle(), start: startFromEntries, stop: stopRunning } })
 const evolveWindow = mountEvolveWindow({
   getState: () => state,
   actions: { evolve: startEvolve, undo: undoEvolve, restore: restoreEvolve },
