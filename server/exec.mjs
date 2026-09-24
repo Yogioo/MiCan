@@ -64,7 +64,7 @@ function killTree(child) {
 //
 // **两条流走两条路**：stdout 是节点的值（进缓存文件、顺着数据边往下走），stderr 是诊断
 // （只在节点上显示、跑完存成 .log 边车文件）。所以扩展可以拿 stderr 吐人话的进度，
-// 值那一头照样是一段干净 JSON —— 见 docs/extension-contract.md 的输出契约。
+// 值那一头照样是一段干净 JSON —— 见 builtin/workspace/extensions/README.md 的输出契约。
 //
 // 超时和输出上限都在这儿管：超时掐进程；超上限只截断、不杀进程 —— 杀掉等于把 agent 的活白干了。
 // 上限是两条流合起来算的，一条话痨的诊断流别想把内存撑爆。
