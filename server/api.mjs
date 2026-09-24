@@ -8,6 +8,7 @@ import { importExtension, listLibrary, scanExtensions } from './extensions.mjs'
 import { deleteSlot, readSlots, renameSlot, writeSlot } from './board-slots.mjs'
 import { createRunner } from './runner.mjs'
 import { createScheduler } from './scheduler.mjs'
+import { importAgentDoc, listAgentDocs, seedAgentDocs } from './workspace-docs.mjs'
 
 const RECENT_FILE = path.join(os.homedir(), '.mican', 'recent.json')
 const SETTINGS_FILE = path.join(os.homedir(), '.mican', 'settings.json')
@@ -69,6 +70,7 @@ export function createApi(initialRoot) {
     if (mode === 'create') {
       await fs.mkdir(target, { recursive: true })
       if ((await fs.readdir(target)).length > 0) throw new Error('目标文件夹不为空')
+      await seedAgentDocs(target)
       root = target
       await scheduler.sync() // 新文件夹里没有画布，等于把上一份的时刻表全撤掉
       return { root, canvas: null, cache: {}, logs: {}, slots: {}, recent: await remember(target) }
@@ -311,6 +313,12 @@ export function createApi(initialRoot) {
       // 拷一份进工作文件夹。同名覆盖与否由界面问过用户再传 overwrite，这里不猜。
       if (route === '/api/import') {
         return send(res, 200, await importExtension(root, body.path, { overwrite: body.overwrite === true }))
+      }
+      if (route === '/api/agent-docs') {
+        if (typeof body.name === 'string') {
+          return send(res, 200, await importAgentDoc(root, body.name, { overwrite: body.overwrite === true }))
+        }
+        return send(res, 200, { items: await listAgentDocs(root) })
       }
       if (route === '/api/save') {
         await save(body)

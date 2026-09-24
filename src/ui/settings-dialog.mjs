@@ -86,6 +86,95 @@ function groupBox(container, name, hint) {
   return box
 }
 
+function agentDocImport(box, { hasWorkspace }) {
+  const group = groupBox(box, 'Agent 文档')
+  const start = button('set-restore', '导入 Agent 文档…')
+  const status = document.createElement('div')
+  status.className = 'set-note'
+  status.textContent = hasWorkspace
+    ? '拷进工作文件夹就立刻生效，跟这个窗口的保存 / 取消无关。已有的默认跳过，要覆盖自己选'
+    : '先打开一个工作文件夹 —— 文档得有地方放'
+  start.disabled = !hasWorkspace
+  group.append(start, status)
+
+  start.addEventListener('click', async () => {
+    start.disabled = true
+    status.textContent = '正在读模板…'
+    let listed
+    try {
+      listed = await request('/api/agent-docs', {})
+    } catch (error) {
+      status.textContent = `读模板失败：${error.message}`
+      start.disabled = false
+      return
+    }
+    if (!listed.items.length) {
+      status.textContent = '内置库里还没有 Agent 文档'
+      return
+    }
+
+    const list = document.createElement('div')
+    const rows = listed.items.map((item) => {
+      const row = document.createElement('div')
+      row.className = 'set-row'
+      const check = document.createElement('input')
+      check.type = 'checkbox'
+      check.checked = true
+      const label = document.createElement('label')
+      label.className = 'set-name set-check'
+      const name = document.createElement('span')
+      name.textContent = ` ${item.name}`
+      label.append(check, name)
+      const control = document.createElement('div')
+      control.className = 'set-control'
+      let overwrite = false
+      if (item.exists) {
+        const choice = document.createElement('select')
+        for (const [value, text] of [['skip', '跳过'], ['over', '覆盖']]) {
+          const option = document.createElement('option')
+          option.value = value
+          option.textContent = text
+          choice.append(option)
+        }
+        choice.addEventListener('change', () => { overwrite = choice.value === 'over' })
+        control.append(choice)
+      } else {
+        control.textContent = '新增'
+      }
+      const note = document.createElement('div')
+      note.className = 'set-note'
+      note.textContent = item.description
+      row.append(label, control, note)
+      list.append(row)
+      return { item, check, overwrite: () => overwrite }
+    })
+
+    const go = button('set-restore', '导入选中的')
+    group.replaceChildren(go, list, status)
+    go.addEventListener('click', async () => {
+      go.disabled = true
+      let done = 0
+      let skipped = 0
+      const bad = []
+      for (const row of rows) {
+        if (!row.check.checked) continue
+        if (row.item.exists && !row.overwrite()) {
+          skipped += 1
+          continue
+        }
+        try {
+          await request('/api/agent-docs', { name: row.item.name, overwrite: row.overwrite() })
+          done += 1
+        } catch (error) {
+          bad.push(`${row.item.name}：${error.message}`)
+        }
+      }
+      status.textContent = [`导入 ${done} 个`, skipped ? `跳过 ${skipped} 个` : '', ...bad].filter(Boolean).join(' · ')
+      go.disabled = false
+    })
+  })
+}
+
 // 「导入内置插件」：把随软件带走的那份样本（builtin/extensions/）拷进这份工作文件夹。
 // 它只是搬目录，不是第二条查找路径（ADR-0012）—— 搬完刷新右键菜单，节点引用的还是工作文件夹里那份。
 // 重名的先问：跳过还是覆盖，默认跳过（改过的文件不该被默默抹掉）。
@@ -250,6 +339,7 @@ export async function askSettings({ current, hasWorkspace = false, onImported } 
   layer('跟这台机器走', '存在用户目录里，换工作文件夹不变；不进画布存档', MACHINE_FIELDS, current.machine, 'machine')
   layer('跟这份画布走', '进画布存档，换个工作文件夹打开就跟着变', CANVAS_FIELDS, current.canvas, 'canvas', (box) => {
     extensionImport(box, { hasWorkspace, onImported })
+    agentDocImport(box, { hasWorkspace })
   })
 
   const submit = async () => {
