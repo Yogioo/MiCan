@@ -16,10 +16,24 @@ export function mountCanvas({ getView, setView, subscribe, onBackgroundPress, on
     grid.style.backgroundPosition = `${metrics.x}px ${metrics.y}px`
   }
 
+  // 脚下那块地方能不能往这个方向滚：节点正文、编辑框都是 overflow: auto，指针停在上面时
+  // 滚轮该归它们（翻输出、翻文档）。一路往上找到画布为止。
+  function scrollableAt(target, deltaY) {
+    for (let el = target instanceof Element ? target : null; el && el !== viewport; el = el.parentElement) {
+      if (!/(auto|scroll|overlay)/.test(getComputedStyle(el).overflowY)) continue
+      const room = deltaY < 0 ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight - 1
+      if (room) return el
+    }
+    return null
+  }
+
   // 滚轮缩放：以鼠标位置为锚点（触控板捏合也会走这里）。
+  // 脚下有能滚的正文就先让它滚，滚到头才回落到画布缩放；捏合手势（ctrlKey 的 wheel）不算，
+  // 那本来就是缩放。
   viewport.addEventListener(
     'wheel',
     (event) => {
+      if (!event.ctrlKey && scrollableAt(event.target, event.deltaY)) return
       event.preventDefault()
       const factor = Math.exp(-event.deltaY * machine.zoomSensitivity)
       setView(zoomAt(getView(), event.clientX, event.clientY, factor))
