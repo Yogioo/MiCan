@@ -20,8 +20,8 @@ export function createNode({ kind = 'text', x = 0, y = 0, w = machine.nodeDefaul
   if (kind === 'command') return { id, kind, x, y, w, h, command, cwd, extension, consts: {} }
   if (kind === 'extract') return { id, kind, x, y, w, h, pick }
   if (kind === 'get' || kind === 'set') return { id, kind, x, y, w, h, slot }
-  if (kind === 'entry') return { id, kind, x, y, w, h }
-  if (kind === 'timer') return { id, kind, x, y, w, h, schedule: schedule || DEFAULT_SCHEDULE }
+  if (kind === 'entry') return { id, kind, x, y, w, h, onBusy: 'skip' }
+  if (kind === 'timer') return { id, kind, x, y, w, h, schedule: schedule || DEFAULT_SCHEDULE, onBusy: 'skip' }
   return { id, kind: 'text', x, y, w, h, file: file || `docs/${id}.md`, text }
 }
 
@@ -119,6 +119,14 @@ export function setNodeCwd(graph, id, cwd) {
   node.cwd = cwd
 }
 
+// 链身被别的链占着时这一下点不点火：'skip' 跳过（默认），'run' 照跑（ADR-0027）。
+// 只有触发节点有这一项 —— 手点的「运行命令」永远让路，没得商量。
+export function setNodeBusy(graph, id, busy) {
+  const node = findNode(graph, id)
+  if (!trigger(node)) return
+  node.onBusy = busy === 'run' ? 'run' : 'skip'
+}
+
 export function findNode(graph, id) {
   return graph.nodes.find((node) => node.id === id) ?? null
 }
@@ -176,6 +184,25 @@ export function dataInto(graph, id) {
 
 export function dataOut(graph, id) {
   return pick(graph, id, 'from', 'data')
+}
+
+// 链身：从一枚会跑的节点出发，顺执行边走出去能碰到的全部会跑的节点（ADR-0027）。
+// 分叉两边都算 —— 哪条边会被走到要跑完那一步才知道；成环靠 visited 停住。
+// 「链身有没有被占」前后端算的是同一份，所以它只写在这儿。
+// 触发节点不进来：它自己不会跑，链身从它那根出边指到的节点起算。
+export function reachable(graph, id) {
+  const out = new Set()
+  const queue = [id]
+  while (queue.length) {
+    const at = queue.pop()
+    if (!at || out.has(at)) continue
+    out.add(at)
+    for (const edge of execOutAll(graph, at)) {
+      const next = findNode(graph, edge.to)
+      if (runnable(next)) queue.push(next.id)
+    }
+  }
+  return out
 }
 
 // 这条边能不能建：能就返回 null，不能就返回一句话当理由（界面直接拿去提示）。

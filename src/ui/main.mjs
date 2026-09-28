@@ -43,8 +43,9 @@ export const state = {
   // 跟机器走的那些值（命令行、超时、界面手感）不住在这儿：它们住在 core/settings.mjs，现读现用；
   // 运行目录属于画布，在 canvas.cwd
   running: new Map(), // 运行中的命令节点：id -> 开跑时间。只活在内存里，不进存档
-  // 后端在跑的每一次运行：runId -> { mode, nodeId, startedAt, nodes }。链也是其中一条，
+  // 后端在跑的每一次运行：runId -> { mode, nodeId, headId, startedAt, nodes }。链也是其中一条，
   // 它不由某个进程代表（两步之间的空档也在跑），所以右下角那个停止按钮看的是这张表。
+  // headId 是这条链起步的会跑节点，触发节点上那句「让路」凭它算链身（ADR-0027）。
   runs: new Map(),
   saving: false, // 有一次落盘还在路上
   evolve: null, // 后端的进化状态 { active, phase, last }，轮询带回来
@@ -488,20 +489,35 @@ async function startRun(mode, id) {
     const { runId } = await api('/api/run', { mode, id })
     startedHere.add(runId)
     watchRun(runId)
+    return ''
   } catch (error) {
-    showMessage(error.message)
+    return error.message // 被拦下来时把后端那句话交回调用方
   }
 }
 
-const onRunCommand = (id) => startRun('node', id)
-const onRunChain = (id) => startRun('chain', id)
+const sayIf = (message) => {
+  if (message) showMessage(message)
+}
+
+const onRunCommand = (id) => startRun('node', id).then(sayIf)
+const onRunChain = (id) => startRun('chain', id).then(sayIf)
 
 // 右下角那个「开始」：从入口节点出发跑链。入口可以有好几枚（将来的子图各有各的入口），
-// 所以它把每一枚入口都点着：已经有一条从同一个起步节点出发的链在走时，那一条报一声，别的照常。
+// 所以它把每一枚入口都点着。被拦下来的合成一句报 —— 消息条是覆盖式的，
+// 一枚一句的话，前面的几枚会被最后那句盖掉，看不见（ADR-0027）。
 async function startFromEntries() {
   const entries = state.graph.nodes.filter((node) => node.kind === 'entry')
   if (!entries.length) return showMessage('画布上没有入口节点：放一枚入口，连到第一个会跑的节点')
-  for (const node of entries) await startRun('chain', node.id)
+  const blocked = []
+  let started = 0
+  for (const node of entries) {
+    const message = await startRun('chain', node.id)
+    if (message) blocked.push(message)
+    else started += 1
+  }
+  if (!blocked.length) return
+  if (entries.length === 1) return showMessage(blocked[0])
+  showMessage(`入口 ${entries.length} 枚：跑起来 ${started} 枚，被拦 ${blocked.length} 枚（${[...new Set(blocked)].join('；')}）`)
 }
 
 // 网页重开时后端可能还有链在走（页面关着也跑），定时器到点也会自己开跑（ADR-0005）——
@@ -728,7 +744,7 @@ async function watchRun(runId) {
 // 后端的一件件事摊到界面上：起跑、这一步开跑、来了一块输出、这一步跑完、没走到的那些、整次结束。
 function applyRunEvent(runId, event) {
   if (event.t === 'run') {
-    state.runs.set(runId, { mode: event.mode, nodeId: event.nodeId, startedAt: event.startedAt, nodes: new Set([event.nodeId]) })
+    state.runs.set(runId, { mode: event.mode, nodeId: event.nodeId, headId: event.headId, startedAt: event.startedAt, nodes: new Set([event.nodeId]) })
     update(() => {})
     return
   }

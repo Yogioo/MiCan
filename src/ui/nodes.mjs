@@ -1,5 +1,5 @@
 // 节点层：渲染三类节点，处理拖动、缩放、选中、编辑、右键菜单。
-import { extensionOf, moveNode, normalizeFileName, resizeNode, setNodeCommand, setNodeConst, setNodeCwd, setNodeFile, setNodePick, setNodeSchedule, setNodeText } from '../core/graph.mjs'
+import { baseName, execOutAll, extensionOf, moveNode, normalizeFileName, reachable, resizeNode, setNodeBusy, setNodeCommand, setNodeConst, setNodeCwd, setNodeFile, setNodePick, setNodeSchedule, setNodeText } from '../core/graph.mjs'
 import { CMD_BAR_H, INPUT_ROW } from '../core/geometry.mjs'
 import { findExtension, inputsOf, outputsOf, routeNameOf, routesOf, wiredNames } from '../core/inputs.mjs'
 import { looksLikePath } from '../core/tokens.mjs'
@@ -72,7 +72,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       else if (node.kind === 'get') renderGet(el, node)
       else if (node.kind === 'set') renderSlot(el, node, state)
       else if (node.kind === 'entry') renderEntry(el, node, state)
-      else if (node.kind === 'timer') renderTimer(el, node)
+      else if (node.kind === 'timer') renderTimer(el, node, state)
       else renderCommand(el, node, state)
     }
     for (const [id, el] of elements) {
@@ -361,21 +361,49 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
   }
 
   // 入口节点：链的起点。它没有进程、没有值，只有一根执行出边；将来子图的入口也是它。
+  // 脚上分两种状态：自己那条链正从这儿走是「运行中」，链身被别的链占着是「让路」（ADR-0027）。
   function renderEntry(el, node, state) {
-    const body = el.querySelector('.node-body')
-    if (el._content !== '链从这里开始') {
-      body.textContent = '链从这里开始'
-      el._content = '链从这里开始'
-    }
-    // 入口自己不跑，但「有一条链正从这儿走」看它 —— 运行记录里的 nodeId 就是它
     const active = [...state.runs.values()].some((run) => run.nodeId === node.id)
+    const held = active ? null : occupant(state, node)
     el.classList.toggle('running', active)
-    el.querySelector('.node-foot').textContent = active ? '运行中' : ''
+    el.classList.toggle('occupied', Boolean(held))
+    const foot = el.querySelector('.node-foot')
+    foot.textContent = active ? '运行中' : held ? `让路 · ${nameOf(state, held)} 在跑` : ''
+    foot.title = held ? '这条链的链身被占着，点了不点火（节点上可以改成「照跑」）' : ''
+    fillBusy(el, node)
+  }
+
+  // 谁占着这枚触发节点要走的那条链身：链比链身（跟后端同一份 reachable），手点的运行命令只有它自己。
+  // 自己那条链从这儿在跑不算「被占」—— 那是「运行中」，脚上分得开。
+  function occupant(state, node) {
+    const head = execOutAll(state.graph, node.id)[0]?.to
+    if (!head) return null
+    const mine = reachable(state.graph, head)
+    for (const run of state.runs.values()) {
+      if (run.nodeId === node.id) continue
+      const from = run.mode === 'chain' ? run.headId || execOutAll(state.graph, run.nodeId)[0]?.to : ''
+      const body = from ? reachable(state.graph, from) : new Set([run.nodeId])
+      for (const id of body) if (mine.has(id)) return run
+    }
+    return null
+  }
+
+  // 占着链身的那条链叫什么：看它起步的那个会跑的节点（新存档都有名字，老存档可能空着）
+  function nameOf(state, run) {
+    const node = state.graph.nodes.find((item) => item.id === (run.headId || run.nodeId))
+    if (!node) return '另一条链'
+    return node.name || baseName(node) || '另一条链'
+  }
+
+  // 「在跑就跳过 / 照跑」那一行：存档里缺 onBusy 就是「在跑就跳过」，跟后端同一个默认。
+  function fillBusy(el, node) {
+    const mode = node.onBusy === 'run' ? 'run' : 'skip'
+    for (const button of el.querySelectorAll('.busy-form button')) button.classList.toggle('on', button.dataset.busy === mode)
   }
 
   // 定时器节点：顶上写人话（「每 30 分钟」），中间就是控件 —— 模式、数值或时刻直接在节点上点，
   // 脚上写下次什么时候、上一回响没响。控件写回去的还是那一行时间表文本（schedule.mjs 解析）。
-  function renderTimer(el, node) {
+  function renderTimer(el, node, state) {
     const text = node.schedule ?? ''
     const schedule = parseSchedule(text)
     const bar = el.querySelector('.node-cmd')
@@ -387,15 +415,24 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     el.classList.toggle('invalid', !schedule) // 认不出来就标红，别等到点才发现不响
 
     fillTimerForm(el, schedule)
+    fillBusy(el, node)
+
+    // 到点也只是「点一下火」：链身被占着就跟人手点一样不点火（ADR-0027）
+    const active = [...state.runs.values()].some((run) => run.nodeId === node.id)
+    const held = active ? null : occupant(state, node)
+    el.classList.toggle('running', active)
+    el.classList.toggle('occupied', Boolean(held))
 
     const foot = []
+    if (active) foot.push('运行中')
+    else if (held) foot.push(`让路 · ${nameOf(state, held)} 在跑`)
     // 秒级的时间表就把秒带出来，不然同一分钟里刷多少次都是一个样子
     const precise = schedule?.mode === 'interval' && schedule.every < 60000
     if (schedule) foot.push(`下次 ${clockOf(nextFireAt(schedule), precise)}`)
     if (node.result?.at) foot.push(`上次 ${clockOf(node.result.at, precise)}${node.result.skipped ? '（跳过）' : ''}`)
     const footEl = el.querySelector('.node-foot')
     footEl.textContent = foot.join(' · ')
-    footEl.title = node.result?.note ?? '' // 「上一条还在跑」这类话太长，收在悬停里
+    footEl.title = node.result?.note ?? '' // 「让不开：…」这类话太长，收在悬停里
   }
 
   // 控件按时间表填。模式按钮与哪一行显着每次都摆正；值只填「没在编辑的」那个控件 ——
@@ -403,7 +440,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
   function fillTimerForm(el, schedule) {
     const fields = scheduleFields(schedule)
     const mode = fields?.mode ?? 'interval'
-    for (const button of el.querySelectorAll('.timer-modes button')) button.classList.toggle('on', button.dataset.mode === mode)
+    for (const button of el.querySelectorAll('.seg-modes button')) button.classList.toggle('on', button.dataset.mode === mode)
     el.querySelector('.timer-interval').hidden = mode !== 'interval'
     el.querySelector('.timer-daily').hidden = mode !== 'daily'
     const fill = (input, value) => {
@@ -440,7 +477,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
   // 定时器的控件：模式（固定间隔 / 每天）、间隔的数值与单位、每天的时刻。
   // 这里是模板，值由 fillTimerForm 填；改控件打的是同一条路 —— 写回一行时间表文本。
   const TIMER_FORM =
-    '<div class="timer-row timer-modes">' +
+    '<div class="timer-row seg-modes">' +
     '<button type="button" data-mode="interval">固定间隔</button>' +
     '<button type="button" data-mode="daily">每天</button>' +
     '</div>' +
@@ -449,6 +486,14 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     '<select class="timer-unit"><option value="秒">秒</option><option value="分钟">分钟</option><option value="小时">小时</option></select>' +
     '</div>' +
     '<div class="timer-row timer-daily"><input class="timer-at" type="time" value="09:00"></div>'
+
+  // 两枚触发节点都有的一行：链身被别的链占着时，这一下点不点火（ADR-0027）。
+  // 入口节点上只有它一行控件，定时器把它接在时间表控件下面。
+  const BUSY_FORM =
+    '<div class="seg-modes busy-form">' +
+    '<button type="button" data-busy="skip">在跑就跳过</button>' +
+    '<button type="button" data-busy="run">照跑</button>' +
+    '</div>'
 
   function createElement(node) {
     const el = document.createElement('div')
@@ -459,9 +504,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
         : node.kind === 'get'
           ? `<div class="node-title"><span class="node-kind">获取</span><span class="node-file"></span></div>${TEXT_PORT}<div class="node-handle"></div>`
         : node.kind === 'entry'
-          ? `<div class="node-title"><span class="node-kind">入口</span></div><div class="node-body"></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
+          ? `<div class="node-title"><span class="node-kind">入口</span></div><div class="node-body"><div class="node-hint">链从这里开始</div>${BUSY_FORM}</div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
           : node.kind === 'timer'
-            ? `<div class="node-cmd"></div><div class="node-body"><div class="timer-form">${TIMER_FORM}</div></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
+            ? `<div class="node-cmd"></div><div class="node-body"><div class="timer-form">${TIMER_FORM}${BUSY_FORM}</div></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
             : node.kind === 'command'
               ? `<div class="node-cmd"></div><div class="node-inputs"></div><div class="node-outputs"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
               : `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
@@ -478,7 +523,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       const unit = form.querySelector('.timer-unit')
       const at = form.querySelector('.timer-at')
       const saveInterval = () => commitSchedule(el, intervalText(count.value, unit.value))
-      for (const button of form.querySelectorAll('.timer-modes button')) {
+      for (const button of form.querySelectorAll('.seg-modes button')) {
         button.addEventListener('click', () =>
           button.dataset.mode === 'daily' ? commitSchedule(el, dailyText(at.value)) : saveInterval(),
         )
@@ -486,6 +531,19 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       count.addEventListener('change', saveInterval)
       unit.addEventListener('change', saveInterval)
       at.addEventListener('change', () => commitSchedule(el, dailyText(at.value)))
+    }
+    // 触发节点上「在跑就跳过 / 照跑」那一行：入口没有被 timer-form 包着，两边都在这里挡一下事件，
+    // 否则点按钮就变成了拖节点。
+    if (node.kind === 'entry' || node.kind === 'timer') {
+      const busy = el.querySelector('.busy-form')
+      busy.addEventListener('pointerdown', (event) => event.stopPropagation())
+      busy.addEventListener('dblclick', (event) => event.stopPropagation())
+      for (const button of busy.querySelectorAll('button')) {
+        button.addEventListener('click', () => {
+          const current = getState().graph.nodes.find((item) => item.id === el.dataset.id)
+          if (current) update((state) => setNodeBusy(state.graph, current.id, button.dataset.busy))
+        })
+      }
     }
     el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('dblclick', (event) => {
@@ -506,7 +564,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
       } else if (current.kind === 'timer') {
         // 定时器：控件就长在节点上，不用再开一层编辑面（双击落在控件上由它自己处理）
       } else if (current.kind === 'entry') {
-        // 入口上没有可编辑的东西：它只是个标记，跑链走右键菜单
+        // 入口上没有可编辑的东西：正文本只有一行字加「在跑就跳过 / 照跑」，跑链走右键菜单
       } else {
         beginBodyEdit(el, current.text, (value) => update((state) => setNodeText(state.graph, current.id, value)))
       }

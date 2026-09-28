@@ -54,8 +54,8 @@ function logicOf(node) {
   }
   if (node.kind === 'extract') return { ...head, pick: node.pick ?? '' }
   if (node.kind === 'get' || node.kind === 'set') return { ...head, slot: node.slot ?? '' }
-  if (node.kind === 'timer') return { ...head, schedule: node.schedule ?? '' }
-  if (node.kind === 'entry') return head
+  if (node.kind === 'timer') return { ...head, schedule: node.schedule ?? '', ...busyPatch(node) }
+  if (node.kind === 'entry') return { ...head, ...busyPatch(node) }
   return { ...head, file: node.file }
 }
 
@@ -90,6 +90,9 @@ const constsPatch = (node) => {
   const out = constsIn(node.consts)
   return Object.keys(out).length ? { consts: out } : {}
 }
+
+// 触发节点上「链身被占时点不点火」那一项（ADR-0027）：只有不是默认的「照跑」才写进存档。
+const busyPatch = (node) => (node.onBusy === 'run' ? { onBusy: 'run' } : {})
 
 // 外来的存档（手改、旧版本、写坏了）：常量只认非空字符串，其余一律丢掉。
 function constsIn(raw) {
@@ -139,9 +142,14 @@ export function deserialize({ canvas: data, layout, texts, results } = {}, { cen
     if (node.kind === 'extract') return { ...head, kind: 'extract', pick: typeof node.pick === 'string' ? node.pick : '' }
     if (node.kind === 'get') return { ...head, kind: 'get', h: CMD_BAR_H, slot: typeof node.slot === 'string' ? node.slot : '' }
     if (node.kind === 'set') return { ...head, kind: 'set', slot: typeof node.slot === 'string' ? node.slot : '' }
-    if (node.kind === 'entry') return { ...head, kind: 'entry' }
+    if (node.kind === 'entry') return { ...head, kind: 'entry', onBusy: node.onBusy === 'run' ? 'run' : 'skip' }
     if (node.kind === 'timer') {
-      return { ...head, kind: 'timer', schedule: typeof node.schedule === 'string' && node.schedule.trim() ? node.schedule : DEFAULT_SCHEDULE }
+      return {
+        ...head,
+        kind: 'timer',
+        schedule: typeof node.schedule === 'string' && node.schedule.trim() ? node.schedule : DEFAULT_SCHEDULE,
+        onBusy: node.onBusy === 'run' ? 'run' : 'skip',
+      }
     }
     const file = typeof node.file === 'string' ? node.file : ''
     if (!file || file.startsWith('/') || file.split(/[\\/]/).includes('..')) {

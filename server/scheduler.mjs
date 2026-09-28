@@ -9,7 +9,7 @@ import { loadArchive, patchResults } from './archive.mjs'
 const KEEP_HITS = 50
 const MAX_DELAY_MS = 2 ** 31 - 1 // setTimeout 的上限；比这更远就先不排，下次 sync 再算
 
-export function createScheduler({ getRoot, runChain, isRunning, isPaused = () => false }) {
+export function createScheduler({ getRoot, runChain, isPaused = () => false }) {
   const arming = new Map() // timerId -> { key, handle }
   const hits = []
   let seq = 0
@@ -20,20 +20,22 @@ export function createScheduler({ getRoot, runChain, isRunning, isPaused = () =>
     if (hits.length > KEEP_HITS) hits.shift()
   }
 
-  // 到点了：这条链还在跑就跳过这一次（只看链身，别的链照跑），否则让运行器从定时器出发走一整条链。
-  async function fire(timerId, headId) {
+  // 到点了：让运行器从定时器出发走一整条链。链身被占时它会把这一下拦下来，
+  // 这儿把那个「让不开」记成跳过 —— 不是「没跑起来」（ADR-0027）。
+  async function fire(timerId) {
     // 进化正在改工作文件夹：不写回，只在内存里记一笔
     if (isPaused()) return record(timerId, 'skipped', '上次跳过了（正在进化）')
-    if (isRunning(headId)) {
-      record(timerId, 'skipped', '上次跳过了（上一条还在跑）')
-      return writeBack(timerId, { at: Date.now(), skipped: true, note: '上次跳过了（上一条还在跑）' })
-    }
     const at = Date.now()
     try {
       await runChain(timerId)
       record(timerId, 'fired', '上次触发了')
       await writeBack(timerId, { at, skipped: false, note: '上次触发了' })
     } catch (error) {
+      if (error?.code === 'busy') {
+        record(timerId, 'skipped', error.message)
+        await writeBack(timerId, { at, skipped: true, note: `上次跳过了（${error.message}）` })
+        return
+      }
       record(timerId, 'failed', `上次没跑起来：${error.message}`)
       await writeBack(timerId, { at, skipped: false, note: `上次没跑起来：${error.message}` })
     }
@@ -50,7 +52,7 @@ export function createScheduler({ getRoot, runChain, isRunning, isPaused = () =>
     if (delay <= 0 || delay > MAX_DELAY_MS) return
     const handle = setTimeout(async () => {
       arming.delete(timerId)
-      await fire(timerId, headId)
+      await fire(timerId)
       await sync() // 响过之后重排下一次：间隔型落到下一个相位，每天型落到明天
     }, delay)
     arming.set(timerId, { key, handle })
@@ -84,7 +86,7 @@ export function createScheduler({ getRoot, runChain, isRunning, isPaused = () =>
     const wanted = new Map()
     for (const node of graph.nodes) {
       if (node.kind !== 'timer') continue
-      const headId = execOutAll(graph, node.id)[0]?.to // 链身从哪个会跑的节点起步（跳过的判据看它）
+      const headId = execOutAll(graph, node.id)[0]?.to // 链身从哪个会跑的节点起步（跟后端算链身同一份原料）
       const schedule = parseSchedule(node.schedule)
       if (!headId || !schedule) continue
       wanted.set(node.id, { headId, schedule, key: JSON.stringify([headId, schedule]) })

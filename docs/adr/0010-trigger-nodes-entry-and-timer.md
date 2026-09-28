@@ -1,6 +1,6 @@
 # 入口与定时器是独立的触发节点
 
-Status: accepted · 已实现
+Status: accepted · 已实现（触发时的判据「同一个起步节点」被 [ADR-0027](./0027-busy-chain-blocks-a-trigger.md) 换成「链身」；定时器那套控件与「到点跳过这一圈」照旧）
 
 [ADR-0006](./0006-exec-graph-branches-and-loops.md) 收尾时留了两件事：定时触发（[ADR-0005](./0005-scheduled-runs-live-in-the-backend.md)）与入口的形态。这一单一起落了。
 

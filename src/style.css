@@ -642,6 +642,29 @@ body.evolving #board {
   box-shadow: inset 3px 0 0 #c9a23c;
 }
 
+/* 触发节点的两种状态（ADR-0027）：自己那条链正从这儿走是「运行中」，
+   链身被别的链占着是「让路」—— 分了色才看得出「点了有没有用」。 */
+.node.kind-entry.running,
+.node.kind-timer.running {
+  border-color: #4a7fe0;
+  animation: node-running 1.4s ease-in-out infinite;
+}
+
+.node.kind-entry.running .node-foot,
+.node.kind-timer.running .node-foot {
+  color: #4a7fe0;
+}
+
+.node.kind-entry.occupied,
+.node.kind-timer.occupied {
+  border-color: #b9ae90;
+}
+
+.node.kind-entry.occupied .node-foot,
+.node.kind-timer.occupied .node-foot {
+  color: #a08d55;
+}
+
 .node-kind {
   color: #8a7a4a;
   font-size: 11px;
@@ -653,10 +676,16 @@ body.evolving #board {
   top: 26px;
   bottom: 24px;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   justify-content: center;
+  gap: 6px;
+  padding: 6px 10px;
   color: #b9ae90;
   font-size: 11px;
+}
+
+.node.kind-entry .node-hint {
+  text-align: center;
 }
 
 .node-port {
@@ -982,8 +1011,13 @@ body.evolving #board {
   display: none;
 }
 
-/* 模式切换：两个并排的按钮，选中的那个亮着 */
-.timer-modes button {
+/* 两选一（定时器的模式、触发节点的「在跑就跳过 / 照跑」）：两个并排的按钮，选中的那个亮着 */
+.seg-modes {
+  display: flex;
+  gap: 6px;
+}
+
+.seg-modes button {
   flex: 1;
   padding: 3px 0;
   border: 1px solid #e6dcc0;
@@ -995,7 +1029,7 @@ body.evolving #board {
   cursor: pointer;
 }
 
-.timer-modes button.on {
+.seg-modes button.on {
   border-color: #c9a23c;
   background: #fbf3e0;
   color: #6f5f2f;
@@ -1017,7 +1051,7 @@ body.evolving #board {
 
 .timer-form input:focus,
 .timer-form select:focus,
-.timer-modes button:focus-visible {
+.seg-modes button:focus-visible {
   border-color: #c9a23c;
   outline: none;
 }

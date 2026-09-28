@@ -50,7 +50,6 @@ export function createApi(initialRoot) {
   const scheduler = createScheduler({
     getRoot: () => root,
     runChain: (timerId) => runner.start({ id: timerId, mode: 'chain', trigger: 'timer' }),
-    isRunning: (headId) => runner.isRunning(headId),
     isPaused: evolving,
   })
   const evolver = createEvolver({

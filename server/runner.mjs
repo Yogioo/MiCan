@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { routeFrom } from '../src/core/chain.mjs'
-import { dataInto, dataOut, execIn, execOutAll, extensionOf, findNode, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
+import { baseName, dataInto, dataOut, execIn, execOutAll, extensionOf, findNode, reachable, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
 import { CANVAS_FILE, RUNS_DIR, RUNS_FILE, cacheFile, logFile, portFile, runLogName } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { resultMeta } from '../src/core/serialize.mjs'
@@ -51,6 +51,26 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
   }
   const owns = (id) => ownedBy((run) => run.ids.has(id))
   const ownsFile = (file) => ownedBy((run) => run.files.has(file))
+
+  // 谁占着这次要用的那些节点（ADR-0027）：在跑的几条里，链身跟这次撞上的那一条。
+  const occupant = (body) => {
+    for (const run of runs.values()) {
+      if (!run.active) continue
+      for (const id of body) if (run.body.has(id)) return run
+    }
+    return null
+  }
+
+  // 「让不开」：链身被占，这一下不点火。带上代码，好让定时器把「跳过」和「没跑起来」分开。
+  const busyError = (holder) => {
+    const error = new Error(
+      holder.mode === 'node'
+        ? '让不开：这个节点还在跑，等它结束'
+        : `让不开：从「${holder.headName}」起步的链还在跑，它的链身走到这儿`,
+    )
+    error.code = 'busy'
+    return error
+  }
 
   // ---- 事件 ----
 
@@ -388,7 +408,6 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     const root = getRoot()
     if (!root) throw new Error('先打开一个工作文件夹，命令才有地方跑')
     if (blocked()) throw new Error(blocked())
-    if (owns(id)) throw new Error('这个节点还在跑，等它结束')
     const { graph, board } = await loadGraph(root)
     const node = findNode(graph, id)
     if (!node) throw new Error('这个节点不在画布上')
@@ -396,11 +415,16 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     if (mode === 'chain' ? !isTrigger(node) : !runnable(node)) {
       throw new Error(mode === 'chain' ? '跑链得从入口节点或定时器开始' : '这个节点运行不了')
     }
-    // 这条链的「链身」从哪个会跑的节点起步。跳过判断看它，不看是谁点的火 ——
-    // 同一个命令，人手从入口进来与定时器进来是同一条链，不该同时跑两遍。
+    // 链身从哪个会跑的节点起步：手点的「运行命令」不走路，链身就是它自己
     const head = mode === 'chain' ? execOutAll(graph, id)[0]?.to : id
-    if (!runnable(findNode(graph, head))) throw new Error(mode === 'chain' ? '它还没连到会跑的节点' : '这个节点运行不了')
-    if (mode === 'chain' && isRunning(head)) throw new Error('这条链还在跑，等它结束')
+    const headNode = findNode(graph, head)
+    if (!runnable(headNode)) throw new Error(mode === 'chain' ? '它还没连到会跑的节点' : '这个节点运行不了')
+    // 链身被占着就不点火（ADR-0027）：链比链身，手点的运行命令只看它自己。
+    // 跟「链身」是什么无关的「谁在跑」不再单查：撞上链身就一定撞上了里面跑着的那个节点。
+    // 「照跑」是触发节点上的开关 —— 不让路；手动的没有开关，永远让路。谁也不会被抢占。
+    const body = mode === 'chain' ? reachable(graph, head) : new Set([head])
+    const holder = occupant(body)
+    if (holder && !(mode === 'chain' && node.onBusy === 'run')) throw busyError(holder)
 
     const run = {
       id: nextId(),
@@ -408,6 +432,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       trigger, // 谁开的这一次：manual 是人点的，timer 是定时器到点（后端自己开的）
       nodeId: id,
       headId: head,
+      headName: headNode.name || baseName(headNode),
+      body, // 这次会走到（和会写）的那些会跑的节点：别人碰不碰得着看它（ADR-0027）
       startedAt: Date.now(),
       step: 0,
       active: true,
@@ -422,7 +448,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       current: null,
     }
     runs.set(run.id, run)
-    emit(run, { t: 'run', runId: run.id, mode, nodeId: id, startedAt: run.startedAt, trigger: run.trigger })
+    emit(run, { t: 'run', runId: run.id, mode, nodeId: id, headId: head, startedAt: run.startedAt, trigger: run.trigger })
     // 不等它跑完：调用方拿 runId 就去订阅事件了
     walk(run).catch((error) => finish(run, 'error', `跑链出错了：${error.message}`))
     return { runId: run.id }
@@ -446,6 +472,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       mode: run.mode,
       trigger: run.trigger,
       nodeId: run.nodeId,
+      headId: run.headId,
       startedAt: run.startedAt,
       active: run.active,
       finishedAt: run.finishedAt ?? null,
@@ -464,10 +491,6 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     return () => run.subscribers.delete(send)
   }
 
-  // 有没有一条从某个会跑的节点起步的链还在走。定时器拿它判断「上一条还没跑完就跳过这一次」：
-  // 人手从入口跑同一条链时定时器也看得见 —— 它们指的是同一个起步节点，本来就是同一条链。
-  const isRunning = (headId) => [...runs.values()].some((run) => run.active && run.headId === headId)
-
   // 全停下，等每一条都真的收了尾（结果写完）才返回
   async function stopAll() {
     for (const run of runs.values()) {
@@ -478,5 +501,5 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     while ([...runs.values()].some((run) => run.active)) await new Promise((done) => setTimeout(done, 100))
   }
 
-  return { start, stop, stopAll, list, attach, owns, ownsFile, isRunning, has: (runId) => runs.has(runId) }
+  return { start, stop, stopAll, list, attach, owns, ownsFile, has: (runId) => runs.has(runId) }
 }

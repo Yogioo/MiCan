@@ -56,8 +56,8 @@ function pickNode(node) {
   }
   if (kind === 'extract') return { id, kind, x, y, w, h, pick: node.pick ?? '' }
   if (kind === 'get' || kind === 'set') return { id, kind, x, y, w, h, slot: node.slot ?? '' }
-  if (kind === 'entry') return { id, kind, x, y, w, h }
-  if (kind === 'timer') return { id, kind, x, y, w, h, schedule: node.schedule ?? '' }
+  if (kind === 'entry') return { id, kind, x, y, w, h, onBusy: node.onBusy === 'run' ? 'run' : 'skip' }
+  if (kind === 'timer') return { id, kind, x, y, w, h, schedule: node.schedule ?? '', onBusy: node.onBusy === 'run' ? 'run' : 'skip' }
   return { id, kind: 'text', x, y, w, h, text: node.text ?? '' }
 }
 
@@ -91,7 +91,7 @@ function placeNode(node, id, dx, dy) {
   }
   if (kind === 'extract') return { id, kind, x, y, w, h, pick: node.pick ?? '' }
   if (kind === 'get' || kind === 'set') return { id, kind, x, y, w, h, slot: node.slot ?? '' }
-  if (kind === 'entry') return { id, kind, x, y, w, h }
-  if (kind === 'timer') return { id, kind, x, y, w, h, schedule: node.schedule ?? '' }
+  if (kind === 'entry') return { id, kind, x, y, w, h, onBusy: node.onBusy === 'run' ? 'run' : 'skip' }
+  if (kind === 'timer') return { id, kind, x, y, w, h, schedule: node.schedule ?? '', onBusy: node.onBusy === 'run' ? 'run' : 'skip' }
   return { id, kind: 'text', x, y, w, h, file: `docs/${id}.md`, text: node.text ?? '' }
 }
