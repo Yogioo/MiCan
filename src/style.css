@@ -1646,6 +1646,12 @@ body.evolving #board {
   align-items: center;
 }
 
+/* 开关那一格是复选框：别跟着 .set-row input 那条 width: 100% 一起撑开 */
+.set-control input[type='checkbox'] {
+  width: auto;
+  padding: 0;
+}
+
 .set-unit,
 .set-note {
   color: #a3a39d;

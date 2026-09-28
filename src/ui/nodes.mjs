@@ -37,7 +37,7 @@ export function isActLine(row) {
 // 脚上的时刻：默认只到分；秒级定时器要看到秒，不然一秒响一次也像什么都没发生
 const clockOf = (ts, withSeconds = false) => new Date(ts).toTimeString().slice(0, withSeconds ? 8 : 5)
 
-export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onNewCommandNode, onNewExtractNode, onNewEntryNode, onNewTimerNode, onNewExtensionNode, onSetRunDir }) {
+export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onNewTextNode, onNewCommandNode, onNewExtractNode, onNewEntryNode, onNewTimerNode, onNewExtensionNode, onSetRunDir }) {
   const layer = document.getElementById('nodes')
   const viewport = document.getElementById('viewport')
   const elements = new Map()
@@ -711,6 +711,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     if (!nodeEl) {
       const world = toWorld(getState().view, event.clientX, event.clientY)
       const items = [
+        { label: '新建文本节点', run: () => onNewTextNode(world) },
         { label: '新建命令节点', run: () => onNewCommandNode(world) },
         { label: '新建提取节点', run: () => onNewExtractNode(world) },
         { label: '新建入口节点', run: () => onNewEntryNode(world) },

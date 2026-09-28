@@ -8,7 +8,7 @@
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max)
 
-// kind：text 自由文本 / path 本机路径（带浏览；allowRelative 的可以写相对工作文件夹的路径）/ shell 命令行名（下拉）/ int 整数 / number 小数
+// kind：text 自由文本 / path 本机路径（带浏览；allowRelative 的可以写相对工作文件夹的路径）/ shell 命令行名（下拉）/ bool 开关 / int 整数 / number 小数
 // tier：common 直接列出来；advanced 收在「细节」里（默认折叠）；hidden 不在设置窗口里改（由别处负责）
 const ADV = { tier: 'advanced' }
 
@@ -48,6 +48,14 @@ export const CANVAS_FIELDS = [
     hint: '整份画布的默认目录：相对工作文件夹的路径（` . ` 就是工作文件夹）或本机绝对路径；某个节点自己设了就覆盖它',
   },
   { group: '运行', key: 'stepLimit', label: '跑链路最多走多少步', kind: 'int', unit: '步', def: 200, min: 1, max: 100000, hint: '环是合法的，这是「跑飞了」的兜底' },
+  {
+    group: '运行',
+    key: 'clearOnRun',
+    label: '跑链前清空链身里的旧输出',
+    kind: 'bool',
+    def: true,
+    hint: '从入口或定时器跑链时，先把链身里会跑的节点的上次结果清掉 —— 没走到的分支就不该还挂着上一趟的输出（ADR-0029）',
+  },
 ]
 
 // 给界面用：某一层里要摆出来的项（隐藏的不算）
@@ -59,6 +67,7 @@ export const canvas = {}
 export const board = {}
 
 function coerce(field, raw) {
+  if (field.kind === 'bool') return raw === undefined || raw === null ? field.def : raw === true || raw === 'true'
   if (field.kind === 'int' || field.kind === 'number') {
     const value = field.kind === 'int' ? Math.round(Number(raw)) : Number(raw)
     if (!Number.isFinite(value)) return field.def

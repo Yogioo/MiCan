@@ -6,10 +6,10 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { routeFrom } from '../src/core/chain.mjs'
 import { baseName, dataInto, dataOut, execIn, execOutAll, extensionOf, findNode, reachable, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
-import { CANVAS_FILE, RUNS_DIR, RUNS_FILE, cacheFile, logFile, portFile, runLogName } from '../src/core/paths.mjs'
+import { CANVAS_FILE, CACHE_DIR, RUNS_DIR, RUNS_FILE, cacheFile, logFile, portFile, runLogName } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { resultMeta } from '../src/core/serialize.mjs'
-import { loadArchive, patchResults } from './archive.mjs'
+import { forgetResults, loadArchive, patchResults } from './archive.mjs'
 import { applyCanvas, canvas } from '../src/core/settings.mjs'
 import { applyVars, collectVars } from '../src/core/vars.mjs'
 import { startCommand } from './exec.mjs'
@@ -402,6 +402,22 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     return finish(run, 'limit', `走了 ${limit} 步还没停，多半是环没兜住，停下来别再走了`)
   }
 
+  // ---- 清空链身里的旧结果（ADR-0029）----
+
+  // 从入口/定时器跑链之前，把链身里会跑的节点的上一次结果先清掉：这一趟没走到的分支不该还挂着
+  // 上一趟的输出。缓存文件、诊断、出口边车一并删，results.json 里那几格也忘掉。
+  // 运行历史（runs.jsonl、runs/）与下游文本节点的正文都不动 —— 前者是记录，后者是用户的东西。
+  // 名字都按节点 id 开头认（<id>.out / <id>.log / <id>.<出口>.out），runs.jsonl 这类名字沾不上。
+  async function clearResults(root, ids) {
+    const dir = path.join(root, CACHE_DIR)
+    for (const name of await fs.readdir(dir).catch(() => [])) {
+      const stem = name.replace(/(?:\.out|\.log)$/, '')
+      if (!ids.has(stem.split('.')[0])) continue
+      await fs.rm(path.join(dir, name), { force: true }).catch(() => {})
+    }
+    await forgetResults(root, ids)
+  }
+
   // ---- 对外的四件事 ----
 
   async function start({ id, mode = 'node', trigger = 'manual' }) {
@@ -448,7 +464,12 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       current: null,
     }
     runs.set(run.id, run)
+    // 跑链前先把链身里的旧结果清掉（ADR-0029）：默认开着，可在画布设置里关。
+    // 清的是「会跑的节点」的结果，运行历史和下游文本节点不动。手点单个节点的那条路不清。
+    const cleared = mode === 'chain' && canvas.clearOnRun ? [...body] : []
+    if (cleared.length) await clearResults(root, new Set(cleared))
     emit(run, { t: 'run', runId: run.id, mode, nodeId: id, headId: head, startedAt: run.startedAt, trigger: run.trigger })
+    if (cleared.length) emit(run, { t: 'clear', ids: cleared })
     // 不等它跑完：调用方拿 runId 就去订阅事件了
     walk(run).catch((error) => finish(run, 'error', `跑链出错了：${error.message}`))
     return { runId: run.id }

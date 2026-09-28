@@ -22,7 +22,14 @@ function fieldRow(modal, field, value) {
   let read
   let set
 
-  if (field.kind === 'shell') {
+  if (field.kind === 'bool') {
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    check.checked = value !== false
+    control.append(check)
+    read = () => check.checked
+    set = (next) => { check.checked = next !== false }
+  } else if (field.kind === 'shell') {
     const select = document.createElement('select')
     const options = [['', '跟这台机器的默认'], ...field.options.map((item) => [item, item])]
     for (const [optionValue, text] of options) {
@@ -59,7 +66,8 @@ function fieldRow(modal, field, value) {
 
   const note = document.createElement('div')
   note.className = 'set-note'
-  note.textContent = [...(field.hint ? [field.hint] : []), `默认 ${field.def === '' ? '空' : field.def}${field.unit ?? ''}`].join(' · ')
+  const fallback = field.kind === 'bool' ? (field.def ? '开' : '关') : field.def === '' ? '空' : field.def
+  note.textContent = [...(field.hint ? [field.hint] : []), `默认 ${fallback}${field.kind === 'bool' ? '' : field.unit ?? ''}`].join(' · ')
 
   wrap.append(name, control, note)
 

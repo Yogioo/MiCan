@@ -778,6 +778,20 @@ function applyRunEvent(runId, event) {
     update(() => {})
     return
   }
+  if (event.t === 'clear') {
+    // 跑链前后端把链身里的旧结果清掉了（ADR-0029）：界面跟着把节点上的上次输出收干净，
+    // 没走到的分支就不会挂着上一趟的输出。这不是图上的改动，所以不走历史。
+    update((draft) => {
+      for (const id of event.ids ?? []) {
+        const node = findNode(draft.graph, id)
+        if (node) {
+          node.result = null
+          node.skipped = false
+        }
+      }
+    })
+    return
+  }
   if (event.t === 'step') {
     state.runs.get(runId)?.nodes.add(event.nodeId)
     state.running.set(event.nodeId, event.startedAt)
@@ -1042,6 +1056,7 @@ const nodes = mountNodes({
   onConnectStart: edges.startConnection,
   onRunCommand,
   onRunChain,
+  onNewTextNode: (world) => createNodeAt(world, 'text'),
   onNewCommandNode: (world) => createNodeAt(world, 'command'),
   onNewExtractNode: (world) => createNodeAt(world, 'extract'),
   onNewEntryNode: (world) => createNodeAt(world, 'entry'),

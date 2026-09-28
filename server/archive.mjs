@@ -91,5 +91,9 @@ function changeResults(root, change) {
 
 export const patchResults = (root, patch) => changeResults(root, (data) => ({ ...data, ...patch }))
 
+// 忘掉这几个节点的结果（ADR-0029 跑链前清空链身）：键整个去掉，不是留一个 null。
+export const forgetResults = (root, ids) =>
+  changeResults(root, (data) => Object.fromEntries(Object.entries(data).filter(([id]) => !ids.has(id))))
+
 export const keepResults = (root, ids) =>
   changeResults(root, (data) => Object.fromEntries(Object.entries(data).filter(([id]) => ids.has(id))))
