@@ -28,3 +28,6 @@ export const EVOLVE_DIR = 'evolve'
 export const EVOLVE_CONFIG_FILE = `${EVOLVE_DIR}/config.json`
 export const EVOLVE_HISTORY_FILE = `${EVOLVE_DIR}/history.jsonl`
 export const EVOLVE_LOG_DIR = `${CACHE_DIR}/evolve`
+// 商量留下的那一版（ADR-0028）：顶层一份路牌，记着从哪个快照起的、pi 的会话钥匙是什么。
+// 对话留在缓存目录（可以整个删掉），拿不到对话也照样能从盘上这版接着聊。
+export const EVOLVE_PENDING_FILE = `${EVOLVE_DIR}/pending.json`

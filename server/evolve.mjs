@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { dataInto, findNode } from '../src/core/graph.mjs'
-import { CACHE_DIR, CANVAS_FILE, DOCS_DIR, EVOLVE_CONFIG_FILE as CONFIG_FILE, EVOLVE_DIR, EVOLVE_HISTORY_FILE as HISTORY_FILE, EVOLVE_LOG_DIR, LAYOUT_FILE, RUNS_FILE } from '../src/core/paths.mjs'
+import { CACHE_DIR, CANVAS_FILE, DOCS_DIR, EVOLVE_CONFIG_FILE as CONFIG_FILE, EVOLVE_DIR, EVOLVE_HISTORY_FILE as HISTORY_FILE, EVOLVE_LOG_DIR, EVOLVE_PENDING_FILE as PENDING_FILE, LAYOUT_FILE, RUNS_FILE } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { nextFireAt, parseSchedule } from '../src/core/schedule.mjs'
 import { FORMAT_VERSION, deserialize } from '../src/core/serialize.mjs'
@@ -66,13 +66,25 @@ async function committedLayersOf(root) {
   return found
 }
 
+// 索引里或 HEAD 里认得的那些：git 的 pathspec 对不上任何东西就会报错（空的 extensions/ 就是一个）
+async function knownLayers(root) {
+  const found = []
+  for (const item of await committedLayersOf(root)) {
+    if ((await git(root, ['ls-files', '--', item])).out) found.push(item)
+    else if ((await git(root, ['ls-tree', '--name-only', 'HEAD', '--', item])).out) found.push(item)
+  }
+  return found
+}
+
 async function snapshot(root) {
   const layers = await layersOf(root)
   if (layers.length) await mustGit(root, ['add', '-A', '--', ...layers])
-  const changed = layers.length && (await git(root, ['diff', '--cached', '--quiet', '--', ...layers])).code !== 0
+  const scope = (await knownLayers(root))
+  const paths = scope.length ? ['--', ...scope] : []
+  const changed = (await git(root, ['diff', '--cached', '--quiet', ...paths])).code !== 0
   const hasHead = (await git(root, ['rev-parse', '--verify', '-q', 'HEAD'])).code === 0
   // 收的是用户上次进化以来在画布上的手改：pi 看历史时要认得出来
-  if (changed) await mustGit(root, ['commit', '-q', '-m', '进化前快照（用户改动）', '--', ...layers])
+  if (changed) await mustGit(root, ['commit', '-q', '-m', '进化前快照（用户改动）', ...paths])
   else if (!hasHead) await mustGit(root, ['commit', '-q', '--allow-empty', '-m', '进化前快照（用户改动）'])
   return mustGit(root, ['rev-parse', 'HEAD'])
 }
@@ -91,7 +103,7 @@ async function rollback(root, sha) {
 async function commitLayers(root, message) {
   const present = await layersOf(root)
   if (present.length) await mustGit(root, ['add', '-A', '--', ...present])
-  const layers = await committedLayersOf(root)
+  const layers = await knownLayers(root)
   if (!layers.length || (await git(root, ['diff', '--cached', '--quiet', '--', ...layers])).code === 0) return null
   await mustGit(root, ['commit', '-q', '-m', message, '--', ...layers])
   const commit = await mustGit(root, ['rev-parse', '--short', 'HEAD'])
@@ -117,6 +129,56 @@ const readLines = (text) =>
       return []
     }
   })
+
+// ---- 商量留下的那一版（ADR-0028）----
+
+const turnsFile = (root, at) => path.join(root, EVOLVE_LOG_DIR, String(at), 'turns.jsonl')
+
+async function addTurn(root, at, row) {
+  const file = turnsFile(root, at)
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  await fs.appendFile(file, `${JSON.stringify({ at: Date.now(), ...row })}\n`, 'utf8')
+}
+
+async function readTurns(root, at) {
+  return readLines(await fs.readFile(turnsFile(root, at), 'utf8').catch(() => ''))
+}
+
+// 没有、或存坏了，都当没有
+async function readPending(root) {
+  try {
+    const data = JSON.parse(await fs.readFile(path.join(root, PENDING_FILE), 'utf8'))
+    return data?.at && data?.snapshot ? data : null
+  } catch {
+    return null
+  }
+}
+
+async function writePending(root, data) {
+  await fs.mkdir(path.join(root, EVOLVE_DIR), { recursive: true })
+  await fs.writeFile(path.join(root, PENDING_FILE), JSON.stringify(data, null, 2), 'utf8')
+}
+
+const clearPending = (root) => fs.rm(path.join(root, PENDING_FILE), { force: true }).catch(() => {})
+
+// 这一版动了哪几个文件：跟快照比，不看 HEAD（中途有谁 commit 过也不影响）
+async function changedLayers(root, sha) {
+  if (!sha) return []
+  const known = await knownLayers(root)
+  const tracked = known.length ? (await git(root, ['diff', '--name-only', sha, '--', ...known])).out.split('\n').filter(Boolean) : []
+  const layers = await layersOf(root)
+  const others = layers.length ? (await git(root, ['ls-files', '--others', '--exclude-standard', '--', ...layers])).out.split('\n').filter(Boolean) : []
+  return [...new Set([...tracked, ...others])].sort()
+}
+
+// 每轮一份 <at>-prompt-<N>.md；以前只留最后一轮的 <at>-prompt.md
+async function readPromptFiles(root, at) {
+  const names = (await fs.readdir(path.join(root, EVOLVE_LOG_DIR)).catch(() => []))
+    .map((name) => ({ name, n: name === `${at}-prompt.md` ? 0 : Number(name.match(new RegExp(`^${at}-prompt-(\\d+)\\.md$`))?.[1]) }))
+    .filter((item) => Number.isInteger(item.n))
+    .sort((a, b) => a.n - b.n)
+  return Promise.all(names.map(({ name }) => fs.readFile(path.join(root, EVOLVE_LOG_DIR, name), 'utf8').catch(() => '')))
+}
 
 // 自动进化的配置：哪项不填就不看哪项。写进来的值不对就报错，让用户重填。
 export function checkConfig(input = {}) {
@@ -183,54 +245,66 @@ async function runScript(command, { cwd, settings, onLog }) {
   return { ...record, data: data && typeof data === 'object' && !Array.isArray(data) ? data : null }
 }
 
-function promptOf({ hint, diagnosis, recent, failure }) {
+// 第 1 轮把诊断和最近的改动一起给（要花一次上下文），后面几轮只给这一句：会话里已经有上文了
+function promptOf({ first, message, diagnosis, recent, carried, failure, rolledBack }) {
   const { text = '', ...facts } = diagnosis ?? {}
   return [
     '你在迭代一份 MiCan 工作文件夹，就是当前目录。有 ITERATE.md 就先读它，照它改；用语对不上看 CONTEXT.md。',
     '',
     '## 这次要解决的',
-    hint || '用户没写，照下面的诊断改。',
-    '',
-    '## 运行历史的诊断',
-    diagnosis ? text : '还没有运行历史。',
-    ...(facts.nodes?.some((item) => item.worse)
-      ? ['', '标了 worse 的节点是上次改动之后才变差的，先看上次改的是不是原因，是就改回来。']
+    message || (first ? '用户没写，照下面的诊断改。' : '（没说什么，接着上一轮）'),
+    ...(first && carried
+      ? ['', '**盘上已经有一版没应用的改动**：这是上次商量留下的。先 `git diff` 看清它，在它上面接着改，不要推倒重来。']
       : []),
-    ...(diagnosis ? ['', '```json', JSON.stringify(facts, null, 2), '```'] : []),
-    '',
-    '## 最近的改动',
-    `${CANVAS_FILE}、${DOCS_DIR}/、${EXT_DIR}/ 最近 ${RECENT_COMMITS} 条 commit，要细看用 git show。`,
-    '「进化：」是以前的进化，「进化前快照（用户改动）」是用户的手改，「撤销进化」「还原到进化 … 之前」是用户撤掉的进化（带着撤销理由）。',
-    '被撤销过的改法，除非这次有明确不同的理由，别再做。',
-    '',
-    '```',
-    recent || '（还没有）',
-    '```',
+    ...(first
+      ? [
+          '',
+          '## 运行历史的诊断',
+          diagnosis ? text : '还没有运行历史。',
+          ...(facts.nodes?.some((item) => item.worse)
+            ? ['', '标了 worse 的节点是上次改动之后才变差的，先看上次改的是不是原因，是就改回来。']
+            : []),
+          ...(diagnosis ? ['', '```json', JSON.stringify(facts, null, 2), '```'] : []),
+          '',
+          '## 最近的改动',
+          `${CANVAS_FILE}、${DOCS_DIR}/、${EXT_DIR}/ 最近 ${RECENT_COMMITS} 条 commit，要细看用 git show。`,
+          '「进化：」是以前的进化，「进化前快照（用户改动）」是用户的手改，「撤销进化」「还原到进化 … 之前」是用户撤掉的进化（带着撤销理由）。',
+          '被撤销过的改法，除非这次有明确不同的理由，别再做。',
+          '',
+          '```',
+          recent || '（还没有）',
+          '```',
+        ]
+      : []),
     '',
     '## 规矩',
     `- 只改 ${CANVAS_FILE}、${DOCS_DIR}/、${EXT_DIR}/ 三处，别碰 ${LAYOUT_FILE}、${EVOLVE_DIR}/ 和 ${CACHE_DIR}/。`,
     `- 文本节点的正文只在 ${DOCS_DIR}/ 里那份 md。`,
     '- 方向是把 agent 每次都在重复做的动作收进脚本（新写一个扩展接进链），并从提示词里删掉让 agent 自己去做的那几句；agent 只留真要判断的那一步。',
-    `- 节点靠 name 找，边写的是 id。新节点给一个画布内唯一的 name，id 别跟已有的重。`,
+    '- 节点靠 name 找，边写的是 id。新节点给一个画布内唯一的 name，id 别跟已有的重。',
     '- 没什么该改的就不改。',
-    '- 最后用一两句话说你改了什么、为什么：这段话就是这次 commit 的说明。',
-    ...(failure ? ['', '## 上一次没过校验', failure, '', '上一次的改动已经回滚，重新改。'] : []),
+    '- 改完停手：不要自己 commit、不要自己 push —— 存档是后端的事。',
+    ...(failure ? ['', '## 上一次没过校验', failure, ...(rolledBack ? ['', '上一次的改动已经回滚，重新改。'] : [])] : []),
   ].join('\n')
 }
 
-// 校验只管「改完这条链还跑不跑得起来」，全是机械检查。返回攒下来的问题，空就是过了。
-async function validate(root, sha, { settings, onLog }) {
+// 便宜的那半校验：画布能解析、每根边两头都在、文本节点的 md 还在、取法对得上、扩展引用还在。
+// 商量时每轮 pi 之后都跑一遍当反馈（ADR-0028）；返回的 fresh 是这次新加进来的扩展，留给全量那半。
+async function checkStructure(root, sha) {
+  const fresh = new Set()
+  const bail = (problem) => ({ problems: [problem], fresh })
   let data
   try {
     data = JSON.parse(await fs.readFile(path.join(root, CANVAS_FILE), 'utf8'))
   } catch (error) {
-    return [`${CANVAS_FILE} 解析不了：${error.message}`]
+    return bail(`${CANVAS_FILE} 解析不了：${error.message}`)
   }
-  if (data?.version !== FORMAT_VERSION) return [`${CANVAS_FILE} 的 version 得是 ${FORMAT_VERSION}`]
+  if (data?.version !== FORMAT_VERSION) return bail(`${CANVAS_FILE} 的 version 得是 ${FORMAT_VERSION}`)
+  const nodes = Array.isArray(data.nodes) ? data.nodes : []
   // 文本节点的正文只在 md：md 没了就是校验不过
   const texts = {}
   const problems = []
-  for (const node of Array.isArray(data.nodes) ? data.nodes : []) {
+  for (const node of nodes) {
     if (node?.kind !== 'text' || typeof node.file !== 'string') continue
     const text = await fs.readFile(path.join(root, node.file), 'utf8').catch(() => null)
     if (text === null) problems.push(`文本节点 ${node.name || node.id} 的 ${node.file} 不在了`)
@@ -240,11 +314,11 @@ async function validate(root, sha, { settings, onLog }) {
   try {
     graph = deserialize({ canvas: data, texts }).graph
   } catch (error) {
-    return [`${CANVAS_FILE} 结构不对：${error.message}`]
+    return bail(`${CANVAS_FILE} 结构不对：${error.message}`)
   }
-  const ids = new Set(data.nodes.map((node) => node?.id))
-  problems.push(...data.edges.filter((edge) => !ids.has(edge?.from) || !ids.has(edge?.to)).map((edge) => `边 ${edge?.id} 有一头的节点不在`))
-  if (problems.length) return problems
+  const ids = new Set(nodes.map((node) => node?.id))
+  problems.push(...(Array.isArray(data.edges) ? data.edges : []).filter((edge) => !ids.has(edge?.from) || !ids.has(edge?.to)).map((edge) => `边 ${edge?.id} 有一头的节点不在`))
+  if (problems.length) return { problems, fresh }
 
   // 下游取法对得上改完的正文：提取节点的源是文本节点时，照它的取法取一遍
   for (const node of graph.nodes) {
@@ -255,7 +329,6 @@ async function validate(root, sha, { settings, onLog }) {
     if (picked.error) problems.push(`提取节点 ${node.id} 从 ${source.file} 取不到「${node.pick}」：${picked.error}`)
   }
 
-  const fresh = new Set()
   for (const node of graph.nodes) {
     if (!node.extension) continue
     try {
@@ -267,9 +340,16 @@ async function validate(root, sha, { settings, onLog }) {
       problems.push(`节点 ${node.id} 引用的扩展 ${node.extension}：${error.message}`)
     }
   }
+  return { problems, fresh }
+}
+
+// 全量校验：结构那半，加上「新扩展接进链之前单独跑一次」。要起进程，只在应用那一下跑（ADR-0028）。
+async function validate(root, sha, { settings, onLog }) {
+  const { problems, fresh } = await checkStructure(root, sha)
   if (problems.length) return problems
 
   // 新扩展接进链之前单独跑一次：输入只给清单里的默认值，stdout 得是一段 JSON，没报失败时声明的出口都得有值
+  const rest = []
   for (const rel of fresh) {
     const built = await commandOf(root, rel)
     const vars = new Map(Object.entries(built.defaults ?? {}).map(([name, value]) => [name, { text: value, file: value, typed: true }]))
@@ -277,20 +357,21 @@ async function validate(root, sha, { settings, onLog }) {
     onLog?.(`\n· 试跑新扩展 ${rel}\n`)
     const result = await runScript(command, { cwd: root, settings, onLog })
     if (!result.data) {
-      problems.push(`新扩展 ${rel} 试跑时 stdout 不是一段 JSON：${result.output.trim().slice(0, 200) || '没有输出'}`)
+      rest.push(`新扩展 ${rel} 试跑时 stdout 不是一段 JSON：${result.output.trim().slice(0, 200) || '没有输出'}`)
       continue
     }
     if (result.data.ok === false) continue
     for (const [name, spec] of Object.entries(built.outputs ?? {})) {
       const picked = pickValue(result.output, spec, { multiline: true })
-      if (picked.error || picked.missing) problems.push(`新扩展 ${rel} 试跑时出口「${name}」取不到值`)
+      if (picked.error || picked.missing) rest.push(`新扩展 ${rel} 试跑时出口「${name}」取不到值`)
     }
   }
-  return problems
+  return rest
 }
 
 export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterward }) {
-  let current = null
+  let current = null // 正在跑的一件事：一次性的进化/撤销/还原，或者商量里的一轮 pi
+  let talk = null // 开着的商量（ADR-0028）：跨轮，直到「应用」或「放弃」
   let last = null
   // 最近这一次的过程：进化窗口按偏移量来取新增的那段。prompts 是每轮交给 pi 的提示词，过程里的 {"prompt":N} 标出它插在哪
   let log = { id: 0, text: '', prompts: [] }
@@ -298,17 +379,45 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
   let pending = null
   let dailyTimer = null
 
-  const status = () => ({ active: Boolean(current), phase: current?.phase ?? '', startedAt: current?.startedAt ?? null, logId: log.id, last })
+  // 商量开着也算占着（ADR-0028）：起新运行、定时器、前端落盘都挡着，直到应用或放弃
+  const status = () => ({
+    active: Boolean(current) || Boolean(talk),
+    running: Boolean(current),
+    phase: current?.phase ?? (talk ? '等你说话' : ''),
+    startedAt: current?.startedAt ?? talk?.at ?? null,
+    logId: log.id,
+    last,
+    talk: talk ? { at: talk.at, session: talk.session, snapshot: talk.snapshot, adopted: talk.adopted, files: talk.files, turns: talk.turns.length } : null,
+  })
   const readLog = (id, from = 0) => (id === log.id ? log.text.slice(from) : log.text)
   const readPrompts = (id, from = 0) => (id === log.id ? log.prompts.slice(from) : log.prompts)
 
-  async function ready() {
+  // 过程往那次的 .log 里滚：一次性的进化和商量里的每一轮共用
+  const emit = (root, at, text) => {
+    log.text += text
+    return fs.appendFile(path.join(root, EVOLVE_LOG_DIR, `${at}.log`), text, 'utf8').catch(() => {})
+  }
+
+  // 商量时钉死同一份 pi 会话（钥匙跟着那次进化走）；一次性的那条路不留会话
+  function piFlags(settings, session) {
+    const flags = session ? ['--会话', quote(session)] : ['--留会话', 'false']
+    if (settings.evolveProvider) flags.push('--provider', quote(settings.evolveProvider))
+    if (settings.evolveModel) flags.push('--model', quote(settings.evolveModel))
+    return flags
+  }
+
+  async function addHistory(root, entry) {
+    await fs.mkdir(path.join(root, EVOLVE_DIR), { recursive: true }).catch(() => {})
+    await fs.appendFile(path.join(root, HISTORY_FILE), `${JSON.stringify(entry)}\n`, 'utf8').catch(() => {})
+  }
+
+  async function ready({ allowTalk = false } = {}) {
     const root = getRoot()
     if (!root) throw new Error('先打开一个工作文件夹')
-    if (current) throw new Error('已经在进化了，等它做完')
+    if (current) throw new Error('正有一件事在跑，等它做完')
+    if (talk && !allowTalk) throw new Error('有一版还没应用：先「应用」或「放弃」')
     const inside = await git(root, ['rev-parse', '--show-toplevel'])
     if (inside.code !== 0) throw new Error('这个工作文件夹不是 git 仓库：先在里面 git init 并提交一次，进化才有快照可回滚')
-    if (current) throw new Error('已经在进化了，等它做完')
     return root
   }
 
@@ -324,10 +433,7 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
       hint,
       dir,
       snapshot: '',
-      onLog: (text) => {
-        log.text += text
-        return fs.appendFile(path.join(dir, `${at}.log`), text, 'utf8').catch(() => {})
-      },
+      onLog: (text) => emit(root, at, text),
       phase: (text) => {
         current.phase = text
         ctx.onLog(`\n· ${text}\n`)
@@ -344,8 +450,7 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
         if (result.target) entry.target = result.target
         if (result.stuck) entry.stuck = true
         Object.assign(entry, { message: result.message, log: `${at}.log` })
-        await fs.mkdir(path.join(root, EVOLVE_DIR), { recursive: true }).catch(() => {})
-        await fs.appendFile(path.join(root, HISTORY_FILE), `${JSON.stringify(entry)}\n`, 'utf8').catch(() => {})
+        await addHistory(root, entry)
         last = { at: Date.now(), ...result }
         current = null
         await afterward()
@@ -355,9 +460,67 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
   }
 
   async function start({ hint = '', by = 'manual' } = {}) {
-    const root = await ready()
-    // 自动触发不带提示词，只照诊断改
-    return begin(root, { by, hint: by === 'manual' ? String(hint).trim() : '', verb: '进化' }, evolve)
+    // 自动触发（runs / streak / daily）照旧一次跑完：没人在场，等不了点头（ADR-0028）
+    if (by !== 'manual') return begin(await ready(), { by, hint: '', verb: '进化' }, evolve)
+    const root = await ready({ allowTalk: true })
+    if (talk) throw new Error('已经有一版在商量：先「应用」或「放弃」')
+    const dir = path.join(root, EVOLVE_LOG_DIR)
+    await fs.mkdir(dir, { recursive: true })
+    // 盘上还留着上次没应用的那版：接着它聊，别重新起一版把上次的改动当用户手改收进快照
+    const kept = await readPending(root)
+    const at = kept?.at ?? Date.now()
+    log = { id: at, text: '', prompts: [] }
+    talk = {
+      at,
+      dir,
+      session: kept?.session ?? `evolve-${at}`,
+      snapshot: kept?.snapshot ?? '',
+      adopted: Boolean(kept),
+      files: [],
+      turns: [],
+      hint: String(hint).trim(),
+    }
+    if (kept) {
+      log.text = await fs.readFile(path.join(dir, `${at}.log`), 'utf8').catch(() => '')
+      log.prompts = await readPromptFiles(root, at)
+      talk.turns = await readTurns(root, at)
+      talk.files = await changedLayers(root, talk.snapshot)
+    }
+    // 停链、快照要等 git，放在这次请求里；诊断和 pi 不阻塞请求，过程由 /api/evolve/watch 一秒一次拉走
+    const state = talk
+    try {
+      const ctx = turn(root, '诊断')
+      ctx.phase('停下在跑的链')
+      await stopRuns()
+      if (!kept) {
+        ctx.phase('快照')
+        state.snapshot = await snapshot(root)
+        await writePending(root, { at, snapshot: state.snapshot, session: state.session })
+      }
+      if (state.hint) {
+        await addTurn(root, at, { role: 'user', text: state.hint })
+        state.turns.push({ role: 'user', text: state.hint })
+      }
+      run(root, async () => {
+        ctx.phase('诊断')
+        const settings = await readSettings()
+        const diag = await runScript(`node ${quote(DIAGNOSE)} --root ${quote(root)}`, { cwd: root, settings, onLog: ctx.onLog })
+        if (!diag.data) throw new Error(`诊断没跑成：${diag.log.trim().slice(-200) || '没有输出'}`)
+        const diagnosis = diag.data.ok === false ? null : diag.data
+        const recent = await recentChanges(root)
+        await piTurn(state, { first: true, message: state.hint, diagnosis, recent, onLog: ctx.onLog, phase: ctx.phase })
+      })
+    } catch (error) {
+      // 这一版还没开起来：别把工作文件夹锁在只读里。上次留下的那版（kept）接着占着。
+      current = null
+      if (!kept) {
+        await clearPending(root)
+        talk = null
+        last = { at: Date.now(), ok: false, message: error.message }
+      }
+      throw error
+    }
+    return status()
   }
 
   async function evolve(ctx) {
@@ -385,15 +548,13 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
   }
 
   async function change({ root, at, hint, dir, phase, onLog }, { diagnosis, sha, settings }) {
-    const flags = ['--留会话', 'false']
-    if (settings.evolveProvider) flags.push('--provider', quote(settings.evolveProvider))
-    if (settings.evolveModel) flags.push('--model', quote(settings.evolveModel))
+    const flags = piFlags(settings, '')
     const recent = await recentChanges(root)
     let failure = ''
     for (let attempt = 1; attempt <= MAX_TRIES; attempt += 1) {
       phase(`pi 第 ${attempt} 次`)
       const promptFile = path.join(dir, `${at}-prompt-${attempt}.md`)
-      const prompt = promptOf({ hint, diagnosis, recent, failure })
+      const prompt = promptOf({ first: true, message: hint, diagnosis, recent, failure, rolledBack: true })
       await fs.writeFile(promptFile, prompt, 'utf8')
       log.prompts.push(prompt)
       onLog(`${JSON.stringify({ prompt: log.prompts.length })}\n`)
@@ -420,6 +581,200 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
       return { ok: true, commit: done.commit, message: `已进化 ${done.commit}：${said.split('\n')[0]}${done.note}` }
     }
     return { ok: false, message: `校验 ${MAX_TRIES} 次都没过，已回滚：\n${failure}` }
+  }
+
+  // ---- 商量（ADR-0028）：多轮对话，pi 改盘但不提交，点头才「应用」----
+
+  // 商量里的一轮：占住（active），过程照旧往那次的 .log 里滚
+  function turn(root, phaseName) {
+    const at = talk.at
+    current = { startedAt: Date.now(), phase: phaseName }
+    return {
+      onLog: (text) => emit(root, at, text),
+      phase: (text) => {
+        if (current) current.phase = text
+        return emit(root, at, `\n· ${text}\n`)
+      },
+    }
+  }
+
+  // 后台跑一件事：不阻塞请求（过程由 /api/evolve/watch 一秒一次拉走），崩了记进对话
+  function run(root, work) {
+    work()
+      .catch((error) => failed(root, error, '这一轮没跑成'))
+      .then(async () => {
+        current = null
+        await afterward()
+        tryPending()
+      })
+    return status()
+  }
+
+  // 一轮崩了：记进对话。第一轮就崩、盘上什么都还没动的不锁着。
+  async function failed(root, error, what) {
+    const why = `${what}：${error.message}`
+    if (!talk) return
+    emit(root, talk.at, `\n· ${why}\n`)
+    last = { at: Date.now(), ok: false, message: why }
+    if (!talk.turns.some((row) => row.role === 'assistant') && !talk.files.length) {
+      await clearPending(root)
+      talk = null
+      return
+    }
+    await addTurn(root, talk.at, { role: 'assistant', ok: false, text: why })
+    talk.turns.push({ role: 'assistant', ok: false, text: why })
+  }
+
+  // 一轮 pi：改一轮、回话进对话、结构校验当反馈。校验不过就再给一次机会（最多 MAX_TRIES）。
+  async function piTurn(state, { first, message, diagnosis, recent, onLog, phase }) {
+    const root = getRoot()
+    const settings = await readSettings()
+    const flags = piFlags(settings, state.session)
+    let lead = message
+    let failure = ''
+    // 上次商量留下的那版还在盘上、而这份对话是新的：先让它看清已有的改动
+    const carried = first && state.adopted && !state.turns.some((row) => row.role === 'assistant')
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt += 1) {
+      phase(`pi 第 ${attempt} 轮`)
+      const n = log.prompts.length + 1
+      const promptFile = path.join(state.dir, `${state.at}-prompt-${n}.md`)
+      const prompt = promptOf({ first, message: lead, diagnosis, recent, carried, failure, rolledBack: false })
+      await fs.writeFile(promptFile, prompt, 'utf8')
+      log.prompts.push(prompt)
+      onLog(`${JSON.stringify({ prompt: n })}\n`)
+      const pi = await runScript(`node ${quote(PI)} --prompt ${quote(promptFile)} ${flags.join(' ')}`, { cwd: root, settings, onLog })
+      const row = pi.data?.ok
+        ? { role: 'assistant', ok: true, text: pi.data.text.trim() }
+        : { role: 'assistant', ok: false, text: pi.data?.reason ?? 'pi 没有输出' }
+      await addTurn(root, state.at, row)
+      state.turns.push({ ...row, at: Date.now() })
+      state.files = await changedLayers(root, state.snapshot)
+      if (!pi.data?.ok) return
+      const { problems } = await checkStructure(root, state.snapshot)
+      if (!problems.length) return
+      failure = problems.map((item) => `- ${item}`).join('\n')
+      onLog(`${failure}\n`)
+      lead = '接着上面这版改：这么改结构就不合法了，修一下。'
+      first = false
+    }
+  }
+
+  // 说一句：记进对话，让 pi 改一轮
+  function say(message) {
+    const root = getRoot()
+    if (!root) throw new Error('先打开一个工作文件夹')
+    if (!talk) throw new Error('这会儿没在商量：先点「开始商量」')
+    if (current) throw new Error('正有一轮在跑，等它说完')
+    const text = String(message ?? '').trim()
+    if (!text) throw new Error('这一轮没说什么')
+    const state = talk
+    const ctx = turn(root, 'pi')
+    run(root, async () => {
+      await addTurn(root, state.at, { role: 'user', text })
+      state.turns.push({ role: 'user', text })
+      await piTurn(state, { first: false, message: text, onLog: ctx.onLog, phase: ctx.phase })
+    })
+    return status()
+  }
+
+  // 应用：全量校验 → 过就这一整段一个 commit（不按轮分）
+  function apply() {
+    const root = getRoot()
+    if (!root) throw new Error('先打开一个工作文件夹')
+    if (!talk) throw new Error('这会儿没在商量')
+    if (current) throw new Error('正有一轮在跑，等它说完')
+    current = { startedAt: Date.now(), phase: '校验' }
+    run(root, () => runApply(root, talk))
+    return status()
+  }
+
+  async function runApply(root, state) {
+    const settings = await readSettings()
+    const set = (text) => { if (current) current.phase = text }
+    const logTo = (text) => emit(root, state.at, text)
+    const logPhase = (text) => { set(text); return logTo(`\n· ${text}\n`) }
+    for (let attempt = 1; attempt <= MAX_TRIES; attempt += 1) {
+      set(attempt === 1 ? '校验' : '再校验')
+      const problems = await validate(root, state.snapshot, { settings, onLog: logTo })
+      if (!problems.length) break
+      const failure = problems.map((item) => `- ${item}`).join('\n')
+      logTo(`\n· 应用前校验没过\n${failure}\n`)
+      if (attempt === MAX_TRIES) {
+        const why = `应用前校验 ${MAX_TRIES} 次都没过，盘上的东西没动，你看着办：\n${failure}`
+        await addTurn(root, state.at, { role: 'assistant', ok: false, text: why })
+        state.turns.push({ role: 'assistant', ok: false, text: why })
+        last = { at: Date.now(), ok: false, message: '校验没过，还留在商量里' }
+        return
+      }
+      // 原因回到商量里，让 pi 接着改（同一条会话）
+      const word = `应用前校验没过，改一下：\n${failure}`
+      await addTurn(root, state.at, { role: 'user', text: word })
+      state.turns.push({ role: 'user', text: word })
+      await piTurn(state, { first: false, message: word, onLog: logTo, phase: logPhase })
+    }
+
+    set('存档')
+    const said = [...state.turns].reverse().find((row) => row.role === 'assistant' && row.ok)?.text ?? ''
+    const head = (said.split('\n')[0] || '商量完的改动').trim()
+    const message = [`进化：${head}`, '', said, ...(state.hint ? ['', `进化提示词：${state.hint}`] : [])].join('\n')
+    let done = null
+    try {
+      done = await commitLayers(root, message)
+    } catch (error) {
+      const why = `应用时存档失败：${error.message}\n盘上那版还在，可以再点一次「应用」，或者「放弃」。`
+      logTo(`\n· ${why}\n`)
+      last = { at: Date.now(), ok: false, message: why }
+      await addTurn(root, state.at, { role: 'assistant', ok: false, text: why })
+      state.turns.push({ role: 'assistant', ok: false, text: why })
+      return
+    }
+    const result = done
+      ? { ok: true, commit: done.commit, message: `已应用 ${done.commit}：${head}${done.note}` }
+      : { ok: true, message: '这一版跟盘上原来的一样，没什么可应用的' }
+    await addHistory(root, {
+      at: state.at,
+      by: 'manual',
+      hint: state.hint,
+      ok: result.ok,
+      snapshot: state.snapshot,
+      ...(result.commit ? { commit: result.commit } : {}),
+      message: result.message,
+      log: `${state.at}.log`,
+    })
+    await clearPending(root)
+    logTo(`\n· ${result.message}\n`)
+    last = { at: Date.now(), ...result }
+    if (talk === state) talk = null
+  }
+
+  // 放弃：三层还原到这次商量开始的样子，路牌收掉
+  async function discard() {
+    const root = getRoot()
+    if (!root) throw new Error('先打开一个工作文件夹')
+    if (!talk) throw new Error('这会儿没在商量')
+    if (current) throw new Error('正有一轮在跑，等它说完')
+    const state = talk
+    current = { startedAt: Date.now(), phase: '放弃' }
+    try {
+      emit(root, state.at, '\n· 放弃这一版：三层还原到这次商量开始的样子\n')
+      await rollback(root, state.snapshot)
+      await clearPending(root)
+      talk = null
+      last = { at: Date.now(), ok: true, message: '已放弃这一版，三层还原了' }
+    } finally {
+      current = null
+      await afterward()
+      tryPending()
+    }
+    return status()
+  }
+
+  // 面板要的那份对话：没在商量就给空
+  async function transcript() {
+    const root = getRoot()
+    if (!root) throw new Error('先打开一个工作文件夹')
+    if (!talk) return { turns: [] }
+    return { at: talk.at, session: talk.session, snapshot: talk.snapshot, adopted: talk.adopted, files: talk.files, turns: talk.turns }
   }
 
   // ---- 撤销 ----
@@ -514,12 +869,8 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
     if (!entry) throw new Error('没有这条进化记录')
     const show = entry.commit ? (await git(root, ['show', '--stat', '--format=%B', entry.commit])).out : ''
     const text = entry.log ? await fs.readFile(path.join(root, EVOLVE_LOG_DIR, path.basename(entry.log)), 'utf8').catch(() => '') : ''
-    // 每轮一份 <at>-prompt-<N>.md；以前只留最后一轮的 <at>-prompt.md
-    const names = (await fs.readdir(path.join(root, EVOLVE_LOG_DIR)).catch(() => []))
-      .map((name) => ({ name, n: name === `${entry.at}-prompt.md` ? 0 : Number(name.match(new RegExp(`^${entry.at}-prompt-(\\d+)\\.md$`))?.[1]) }))
-      .filter((item) => Number.isInteger(item.n))
-      .sort((a, b) => a.n - b.n)
-    const prompts = await Promise.all(names.map(({ name }) => fs.readFile(path.join(root, EVOLVE_LOG_DIR, name), 'utf8').catch(() => '')))
+    // 每轮一份 <at>-prompt-<N>.md，以前只留最后一轮那份
+    const prompts = await readPromptFiles(root, entry.at)
     return { entry, show, log: text, prompts }
   }
 
@@ -543,7 +894,7 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
   }
 
   async function tryPending() {
-    if (!pending || current || !isIdle()) return
+    if (!pending || current || talk || !isIdle()) return
     const { by, root } = pending
     pending = null
     if (root !== getRoot() || !(await readConfig(root)).auto) return
@@ -553,7 +904,7 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
   // 运行器每往 runs.jsonl 追加一行，看一次 runs 和 streak
   async function recorded(entry) {
     const root = getRoot()
-    if (!root || current || pending) return
+    if (!root || current || talk || pending) return
     const settings = await readConfig(root)
     if (!settings.auto) return
     const by = await triggerOf(root, settings, entry.node)
@@ -566,6 +917,24 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
     dailyTimer = null
     const root = getRoot()
     if (!root) return
+    // 盘上有一版没应用的（上次商量留下的，ADR-0028）：接着占着，等「应用」或「放弃」
+    const kept = await readPending(root)
+    if (kept && !current && (!talk || talk.at !== kept.at)) {
+      const dir = path.join(root, EVOLVE_LOG_DIR)
+      log = { id: kept.at, text: await fs.readFile(path.join(dir, `${kept.at}.log`), 'utf8').catch(() => ''), prompts: await readPromptFiles(root, kept.at) }
+      talk = {
+        at: kept.at,
+        dir,
+        session: kept.session,
+        snapshot: kept.snapshot,
+        adopted: true,
+        turns: await readTurns(root, kept.at),
+        files: await changedLayers(root, kept.snapshot),
+        hint: '',
+      }
+    } else if (!kept && talk && !current) {
+      talk = null
+    }
     const settings = await readConfig(root)
     if (!settings.auto || !settings.daily) return
     const delay = nextFireAt(parseSchedule(settings.daily)) - Date.now()
@@ -579,6 +948,10 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
 
   return {
     start,
+    say,
+    apply,
+    discard,
+    transcript,
     undo,
     restore,
     history,
@@ -590,6 +963,6 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
     status,
     readLog,
     readPrompts,
-    active: () => Boolean(current),
+    active: () => Boolean(current) || Boolean(talk),
   }
 }

@@ -285,6 +285,19 @@ export function askUndoReason(commit) {
   return modal.promise
 }
 
+// 放弃商量里那一版：三层整份还原到这次商量开始之前，那份改动就没了
+const filesText = (files) => (files?.length ? `已经改了这 ${files.length} 个文件：${files.join('、')}` : '盘上还没改什么')
+
+export async function confirmDiscard(files) {
+  const modal = openModal({ title: '放弃这一版', okText: '放弃' })
+  const label = document.createElement('div')
+  label.className = 'modal-label'
+  label.textContent = `画布、docs/、extensions/ 和布局按这次商量开始前的快照整份还原。${filesText(files)}，还原之后都没了。`
+  modal.body.append(label)
+  modal.ok.addEventListener('click', () => modal.finish(true))
+  return (await modal.promise) === true
+}
+
 // 整份还原到某次进化之前：列出会一起丢掉的那几次，确认一次
 export async function confirmRestore(commit, lost) {
   const modal = openModal({ title: `还原到 ${commit} 之前`, okText: '还原' })

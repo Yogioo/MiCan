@@ -395,6 +395,42 @@ body.evolving #board {
   color: #7b7b74;
 }
 
+.evolve-files {
+  color: #6b6b64;
+}
+
+.evolve-turns {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.evolve-turn {
+  padding: 4px 8px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.evolve-turn.user {
+  background: #f3eefc;
+}
+
+.evolve-turn.agent {
+  background: #f7f7f4;
+}
+
+.evolve-turn.failed {
+  background: #fdecea;
+  color: #8c2f22;
+}
+
+.evolve-said {
+  color: #9a9a92;
+}
+
 .evolve-panel .evolve-hint {
   min-height: 56px;
 }

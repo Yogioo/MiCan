@@ -28,7 +28,7 @@ import { mountEvolveWindow } from './evolve-window.mjs'
 import { mountNodes } from './nodes.mjs'
 import { askSettings } from './settings-dialog.mjs'
 import { mountToolbar } from './toolbar.mjs'
-import { askRunDir, askUndoReason, askWorkspace, confirmRestore } from './workspace-dialog.mjs'
+import { askRunDir, askUndoReason, askWorkspace, confirmDiscard, confirmRestore } from './workspace-dialog.mjs'
 
 export const state = {
   view: createView(),
@@ -593,6 +593,36 @@ async function startEvolve(hint) {
   await beginEvolve('/api/evolve', { hint })
 }
 
+// 商量里接着说一轮：不阻塞，过程照旧由 watch 拉（ADR-0028）
+async function sayEvolve(message) {
+  if (!state.workspace || state.evolve?.running) return
+  try {
+    watchEvolve(await api('/api/evolve/say', { message }))
+  } catch (error) {
+    showMessage(error.message)
+  }
+}
+
+// 点头：校验 + 这一整段一个 commit
+async function applyEvolve() {
+  if (!state.workspace || state.evolve?.running) return
+  try {
+    watchEvolve(await api('/api/evolve/apply', {}))
+  } catch (error) {
+    showMessage(error.message)
+  }
+}
+
+async function discardEvolve() {
+  if (!state.workspace || state.evolve?.running) return
+  if (!(await confirmDiscard(state.evolve?.talk?.files ?? []))) return
+  try {
+    watchEvolve(await api('/api/evolve/discard', {}))
+  } catch (error) {
+    showMessage(error.message)
+  }
+}
+
 async function undoEvolve(entry) {
   if (!state.workspace || state.evolve?.active) return
   const reason = await askUndoReason(entry.commit)
@@ -1023,7 +1053,7 @@ const nodes = mountNodes({
 const toolbar = mountToolbar({ getState: () => state, actions: { newWorkspace, saveAs, openWorkspace, resetZoom, openSettings, evolve: () => evolveWindow.toggle(), start: startFromEntries, stop: stopRunning } })
 const evolveWindow = mountEvolveWindow({
   getState: () => state,
-  actions: { evolve: startEvolve, undo: undoEvolve, restore: restoreEvolve },
+  actions: { evolve: startEvolve, say: sayEvolve, apply: applyEvolve, discard: discardEvolve, undo: undoEvolve, restore: restoreEvolve },
   onClose: closeEvolveWindow,
 })
 const boardPanel = mountBoard({

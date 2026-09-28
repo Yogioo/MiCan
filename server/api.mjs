@@ -59,12 +59,10 @@ export function createApi(initialRoot) {
     isIdle: () => !runner.list().some((run) => run.active),
     afterward: () => scheduler.sync(),
   })
-  // 起来的时候盘上可能已经有一份画布（环境变量指的文件夹）：先把时刻表装上。
-  // 不然要等第一次落盘或打开文件夹，定时器才会开始响 —— 在那之前界面看上去是死的。
-  if (root) {
-    scheduler.sync()
-    evolver.sync()
-  }
+  // 起来的时候盘上可能已经有一份画布（环境变量指的文件夹）：先把时刻表装上，上次商量留下的那版也接着占住。
+  // 不然要等第一次落盘或打开文件夹，定时器才会开始响、面板才知道有东西在等 —— 在那之前界面看上去是死的。
+  // 这两件都是异步的，所以接口先等它们做完，别让第一圈轮询看见一个还没装好的后端。
+  const booted = root ? Promise.all([scheduler.sync(), evolver.sync()]).catch(() => {}) : Promise.resolve()
 
   function inside(relative) {
     const target = path.resolve(root, relative)
@@ -322,6 +320,7 @@ export function createApi(initialRoot) {
 
   return async function handleApi(req, res, next) {
     if (!req.url?.startsWith('/api/')) return next()
+    await booted
     const route = req.url.split('?')[0]
     try {
       if (req.method !== 'POST' && !route.endsWith('/events')) throw new Error('只接受 POST')
@@ -393,7 +392,13 @@ export function createApi(initialRoot) {
         throw new Error('不认识的面板动作')
       }
       if (route === '/api/runs') return send(res, 200, { items: runner.list(), triggers: scheduler.triggers(), evolve: evolver.status() })
+      // 开一条商量（ADR-0028）：手动走商量，自动触发在那之前的 start 里已经分掉
       if (route === '/api/evolve') return send(res, 200, await evolver.start({ hint: body.hint }))
+      // 商量里的下一轮、应用（校验 + commit）、放弃（还原），以及面板要的那份对话
+      if (route === '/api/evolve/say') return send(res, 200, evolver.say(body.message))
+      if (route === '/api/evolve/apply') return send(res, 200, evolver.apply())
+      if (route === '/api/evolve/discard') return send(res, 200, await evolver.discard())
+      if (route === '/api/evolve/talk') return send(res, 200, await evolver.transcript())
       // 自动进化的配置：不带 config 是读
       if (route === '/api/evolve/config') return send(res, 200, await evolver.config(body.config))
       if (route === '/api/evolve/history') return send(res, 200, await evolver.history())
