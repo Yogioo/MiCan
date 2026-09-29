@@ -24,6 +24,7 @@ pack 不编译任何东西，只是把 node 官方的预编译包搬进 `runtime
 MiCan-<目标>/
   MiCan.bat | MiCan.command | MiCan.sh   双击这个
   runtime/node[.exe]                     自带的运行时（连 node 的 LICENSE 一起）
+  version.json                           我是哪个版本、哪个平台（更新比的就是它）
   CONTEXT.md
   dist/                                  界面，vite 的产物
   server/                                后端
@@ -37,11 +38,13 @@ MiCan-<目标>/
 | --- | --- | --- |
 | `builtin/` | `server/extensions.mjs` 退一级 | 必须跟 `server/` 同级，少一层就找不到 |
 | `CONTEXT.md` | `server/workspace-docs.mjs` 退一级 | 落在**包根**，不在 `builtin/` 里 |
+| `version.json` | `server/update.mjs` 退一级 | 也落在**包根**；出包时从 `package.json` 抄进去 |
 | `src/core/` | `server/*.mjs` 写的是 `../src/core/…` | 必须带；`src/ui` 由 vite 打进 dist 了，不重复带 |
 
 `CONTEXT.md` 是个特例：用语正文在仓库里只有一份、只在根上维护，`workspace-docs.mjs` 里那句 `if (name === GLOSSARY) return path.join(ROOT, GLOSSARY)` 就是从根取的。**漏了它，新建工作文件夹会当场 ENOENT** —— 而且只在真打包后现形，dev 下仓库根永远有那个文件。
 
 包里没有 `package.json`：`.mjs` 自己就是 ESM，不需要它声明 type。带上反而让人以为要先 `npm i`。
+版本号只有一处维护（仓库根那份 `package.json`），出包时抄成包根的 `version.json` —— 软件自己更新时比的就是它（ADR-0033）。
 
 ## 加一个平台
 

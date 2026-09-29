@@ -566,14 +566,53 @@ async function pollLoop() {
   pollTimer = setTimeout(pollLoop, pollDelay())
 }
 
+let backendUp = false
+let misses = 0
+let restarting = false
+let seenUpdate = ''
+
+// 后端断过又回来 = 更新装上重启了（ADR-0033）。判据要求「先连上过、再断掉」，
+// 所以本来就没后端（只起了 vite）时不会被误认成一个死循环刷新。
+async function watchRestart() {
+  if (restarting) return
+  restarting = true
+  const startedAt = Date.now()
+  const again = async () => {
+    if (Date.now() - startedAt > 5 * 60 * 1000) return void (restarting = false) // 等不来就算了，别一直试
+    showMessage('软件正在更新并重启，页面一会儿自己刷新…') // 每秒续一次命：等的过程里这句一直挂着
+    try {
+      await api('/api/runs', {})
+    } catch {
+      setTimeout(again, 1000)
+      return
+    }
+    location.reload() // 手里这份 JS 是旧 dist 里的，得换一份
+  }
+  void again()
+}
+
+// 有新版本：自动更新开着就不用跟人说（它自己会装上），关着才提示一句去设置里点
+function noteUpdate(update) {
+  if (!update) return
+  if (update.restarting) return watchRestart()
+  if (!update.hasUpdate || update.staged || seenUpdate === update.latest) return
+  seenUpdate = update.latest
+  showMessage(machine.autoUpdate ? `有新版本 v${update.latest}，会自动装上` : `有新版本 v${update.latest}，去设置里更新`)
+}
+
 async function pollRuns() {
-  if (!state.workspace) return
   let answer
   try {
     answer = await api('/api/runs', {})
   } catch {
+    misses += 1
+    if (backendUp && misses >= 3) watchRestart()
     return // 后端不在就先不管，下一圈再说
   }
+  backendUp = true
+  misses = 0
+  noteUpdate(answer.update)
+  if (!state.workspace) return
   // 在跑的 + 刚跑完的都接上：一秒一条链的时候，只接在跑的根本抓不住。
   // 页面打开之前就跑完的不用接 —— 它们的结果早就在存档里，loadWorkspace 已经读回来了。
   for (const item of answer.items ?? []) {

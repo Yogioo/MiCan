@@ -34,6 +34,7 @@ export const MACHINE_FIELDS = [
   { group: '界面', key: 'messageMs', label: '提示显示多久', kind: 'int', unit: '毫秒', def: 4000, min: 500, max: 60000, hint: '工具条上那句临时提示', ...ADV },
   { group: '落盘与撤销', key: 'autosaveMs', label: '改动后多久落盘', kind: 'int', unit: '毫秒', def: 500, min: 50, max: 10000, hint: '防抖：连发的改动并成一次写', ...ADV },
   { group: '落盘与撤销', key: 'undoMergeMs', label: '撤销合并的间隔', kind: 'int', unit: '毫秒', def: 500, min: 0, max: 10000, hint: '这段时间内的改动并成一步撤销', ...ADV },
+  { group: '更新', key: 'autoUpdate', label: '自动更新', kind: 'bool', def: true, hint: 'GitHub 上有新版本就自己装上并重启；关掉只是不自动装，检查与「立即更新」照旧（ADR-0033）' },
 ]
 
 // 跟画布走：换个工作文件夹打开，值就跟着换 —— 它是这份流程的一部分，不是这台机器的一部分。

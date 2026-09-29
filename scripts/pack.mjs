@@ -21,6 +21,9 @@ const CACHE = path.join(os.tmpdir(), 'mican-pack-cache')
 const OUT_ROOT = path.join(APP_ROOT, 'release')
 // 跟本机对齐，免得开发时一个版本、发出去另一个。CI 上用 NODE_VERSION 钉死。
 const NODE_VERSION = process.env.NODE_VERSION ?? process.version
+// 版本号只在 package.json 里维护一处：包根那份 version.json 是出包时从这儿抄的（ADR-0033）。
+// 包里不背 package.json（见 docs/packaging.md），所以更新要比的那个版本得单独写一份进去。
+const VERSION = JSON.parse(await fs.readFile(path.join(APP_ROOT, 'package.json'), 'utf8')).version
 
 const TARGETS = {
   'win-x64': { node: 'win-x64', zipped: true, bin: 'node.exe', script: 'MiCan.bat' },
@@ -99,6 +102,9 @@ async function assemble(target, unpacked) {
   // 用语正文（CONTEXT.md）在仓库里只有一份、只在根上维护，所以它在包里的家也是根目录：
   // workspace-docs.mjs 是从 server/ 往上退一级去拿它的。不带这一份，新建工作文件夹会当场报错。
   await fs.copyFile(path.join(APP_ROOT, 'CONTEXT.md'), path.join(out, 'CONTEXT.md')).catch(() => {})
+  // 这一份是「我是哪个版本、哪个平台」的唯一出处（server/update.mjs 退一级读它）：没有它，
+  // 软件就只当自己是仓库里那份开发模式，只查不装。
+  await fs.writeFile(path.join(out, 'version.json'), JSON.stringify({ version: VERSION, target }, null, 2))
 
   const runtime = path.join(out, 'runtime')
   await fs.mkdir(runtime, { recursive: true })

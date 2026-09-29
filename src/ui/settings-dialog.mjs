@@ -277,6 +277,76 @@ function extensionImport(box, { hasWorkspace, onImported }) {
   })
 }
 
+// 「版本」：当前版本、检查更新、立即更新。更新是整包换掉再重启（ADR-0033），所以跟这个窗口的
+// 保存 / 取消无关 —— 它改的不是配置，是软件本身。自动更新那一项在 MACHINE_FIELDS 里，跟着这一层存。
+function updateBlock(box) {
+  const group = groupBox(box, '版本')
+  const row = document.createElement('div')
+  row.className = 'set-row'
+  const name = document.createElement('div')
+  name.className = 'set-name'
+  name.textContent = '当前版本'
+  const control = document.createElement('div')
+  control.className = 'set-control'
+  const current = document.createElement('span')
+  control.append(current)
+  const note = document.createElement('div')
+  note.className = 'set-note'
+  note.textContent = '装的是 GitHub 上最新那份发行包，装完软件自己重启、页面跟着刷新'
+  row.append(name, control, note)
+
+  const bar = document.createElement('div')
+  bar.className = 'set-control'
+  const check = button('set-restore', '检查更新')
+  const install = button('set-restore', '立即更新')
+  const link = document.createElement('a')
+  link.className = 'set-note'
+  link.target = '_blank'
+  link.rel = 'noreferrer'
+  link.textContent = '看这次改了什么'
+  link.hidden = true
+  bar.append(check, install, link)
+  const status = document.createElement('div')
+  status.className = 'set-note'
+  group.append(row, bar, status)
+
+  const write = (data) => {
+    current.textContent = data.current ? `v${data.current}（${data.target || '这个平台'}）` : '不认识'
+    check.disabled = Boolean(data.busy) || data.restarting
+    install.disabled = Boolean(data.busy) || data.restarting || !data.packaged || !data.hasUpdate
+    link.hidden = !data.url || !data.hasUpdate
+    if (data.url) link.href = data.url
+    const parts = []
+    if (data.restarting) parts.push('正在更新：软件马上重启，页面会自己刷新')
+    else if (!data.packaged) parts.push('这是仓库里的开发模式，不是发行包：只查不装')
+    else if (data.busy === 'download') parts.push('正在下载新版本…')
+    else if (data.error) parts.push(`没查成：${data.error}`)
+    else if (!data.latest) parts.push('还没问过 GitHub')
+    else if (!data.hasUpdate) parts.push('已经是最新的')
+    else if (!data.assetOk) parts.push(`有 v${data.latest}，但这次发布里没有 ${data.target} 的包`)
+    else parts.push(data.staged ? `v${data.latest} 已经下好，重启就换上` : `有新版本 v${data.latest}`)
+    status.textContent = parts.join(' · ')
+  }
+
+  const ask = async (action) => {
+    check.disabled = true
+    install.disabled = true
+    try {
+      write(await request('/api/update', action ? { action } : {}))
+    } catch (error) {
+      status.textContent = `更新这一步没成：${error.message}`
+      check.disabled = false
+      install.disabled = false
+    }
+  }
+  check.addEventListener('click', () => ask('check'))
+  install.addEventListener('click', () => {
+    status.textContent = '正在下载新版本…（一百来兆，等一会儿）'
+    ask('apply')
+  })
+  void ask('status')
+}
+
 export async function askSettings({ current, hasWorkspace = false, onImported } = {}) {
   const modal = openModal({ title: '设置', okText: '保存', wide: true })
   const readers = []
@@ -344,7 +414,7 @@ export async function askSettings({ current, hasWorkspace = false, onImported } 
     box.append(restore)
   }
 
-  layer('跟这台机器走', '存在用户目录里，换工作文件夹不变；不进画布存档', MACHINE_FIELDS, current.machine, 'machine')
+  layer('跟这台机器走', '存在用户目录里，换工作文件夹不变；不进画布存档', MACHINE_FIELDS, current.machine, 'machine', (box) => updateBlock(box))
   layer('跟这份画布走', '进画布存档，换个工作文件夹打开就跟着变', CANVAS_FIELDS, current.canvas, 'canvas', (box) => {
     extensionImport(box, { hasWorkspace, onImported })
     agentDocImport(box, { hasWorkspace })

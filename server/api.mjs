@@ -12,6 +12,7 @@ import { deleteSlot, readSlots, renameSlot, writeSlot } from './board-slots.mjs'
 import { createEvolver } from './evolve.mjs'
 import { createRunner } from './runner.mjs'
 import { createScheduler } from './scheduler.mjs'
+import { createUpdater } from './update.mjs'
 import { importAgentDoc, listAgentDocs, seedAgentDocs } from './workspace-docs.mjs'
 
 const RECENT_FILE = path.join(os.homedir(), '.mican', 'recent.json')
@@ -35,6 +36,8 @@ const IS_WINDOWS = process.platform === 'win32'
 
 export function createApi(initialRoot) {
   let root = initialRoot ? path.resolve(initialRoot) : null
+  // 最后一次落盘的时刻：自动更新等「人没在写」用它（ADR-0033）
+  let lastSaveAt = 0
 
   // 进化期间（ADR-0022）：不起新的运行、定时器跳过、前端落盘不收
   const evolving = () => evolver.active()
@@ -61,10 +64,18 @@ export function createApi(initialRoot) {
     isIdle: () => !runner.list().some((run) => run.active),
     afterward: () => scheduler.sync(),
   })
+  // 自动更新（ADR-0033）：启动后自己问 GitHub，装着把包换成新的。它跟工作文件夹无关，所以一直在排。
+  const updater = createUpdater({
+    readSettings,
+    // 手头空不空：没有链在跑、也不在进化 —— 跟定时器的「占用」是同一份判据
+    idle: () => !evolving() && !runner.list().some((run) => run.active),
+    lastSaveAt: () => lastSaveAt,
+  })
+
   // 起来的时候盘上可能已经有一份画布（环境变量指的文件夹）：先把时刻表装上，上次商量留下的那版也接着占住。
   // 不然要等第一次落盘或打开文件夹，定时器才会开始响、面板才知道有东西在等 —— 在那之前界面看上去是死的。
-  // 这两件都是异步的，所以接口先等它们做完，别让第一圈轮询看见一个还没装好的后端。
-  const booted = root ? Promise.all([scheduler.sync(), evolver.sync()]).catch(() => {}) : Promise.resolve()
+  // 这几件都是异步的，所以接口先等它们做完，别让第一圈轮询看见一个还没装好的后端。
+  const booted = Promise.all([updater.start(), root ? Promise.all([scheduler.sync(), evolver.sync()]).catch(() => {}) : null]).catch(() => {})
 
   // 过期日志清理（ADR-0031）：后端启动时扫一遍，之后每天一次。换工作文件夹时也顺手扫一遍 ——
   // 启动时可能还没打开工作文件夹，光靠那一次等于没做。
@@ -232,6 +243,7 @@ export function createApi(initialRoot) {
     await fs.writeFile(path.join(root, CANVAS_FILE), JSON.stringify(canvas, null, 2), 'utf8')
     await keepResults(root, new Set((canvas?.nodes ?? []).map((node) => node?.id)))
     await scheduler.sync() // 存档里可能多了/少了/改写了定时器；没变的那几个原地不动
+    lastSaveAt = Date.now() // 自动更新等这个：刚有人写过盘就先不重启（ADR-0033）
   }
 
   // 设置文件是外来的（手改、旧版本、写坏了）：范围外夹住，不是数就用默认。
@@ -252,10 +264,12 @@ export function createApi(initialRoot) {
         outputLimitKb: clampInt(data.outputLimitKb, DEFAULT_OUTPUT_KB, 1, MAX_OUTPUT_KB),
         logKeepDays: clampInt(data.logKeepDays, DEFAULT_LOG_KEEP_DAYS, 1, MAX_LOG_KEEP_DAYS),
         recentMax: clampInt(data.recentMax, DEFAULT_RECENT_MAX, 1, MAX_RECENT_MAX),
+        // 自动更新默认开：没存过这一项就是开着（ADR-0033）
+        autoUpdate: data.autoUpdate !== false,
       }
     } catch {
       // 没设过、或存坏了，都当没设
-      return { shell: '', timeout: DEFAULT_TIMEOUT_S, outputLimitKb: DEFAULT_OUTPUT_KB, logKeepDays: DEFAULT_LOG_KEEP_DAYS, recentMax: DEFAULT_RECENT_MAX }
+      return { shell: '', timeout: DEFAULT_TIMEOUT_S, outputLimitKb: DEFAULT_OUTPUT_KB, logKeepDays: DEFAULT_LOG_KEEP_DAYS, recentMax: DEFAULT_RECENT_MAX, autoUpdate: true }
     }
   }
 
@@ -352,6 +366,7 @@ export function createApi(initialRoot) {
         if (body.logKeepDays !== undefined) patch.logKeepDays = checkLogKeepDays(body.logKeepDays)
         if (body.recentMax !== undefined) patch.recentMax = checkRecentMax(body.recentMax)
         if (typeof body.openWorkspace === 'string') patch.openWorkspace = requireAbsolute(body.openWorkspace, '启动时打开的工作文件夹')
+        if (body.autoUpdate !== undefined) patch.autoUpdate = body.autoUpdate === true
         // 界面上那堆手感值（节点尺寸、缩放范围…）后端不认识，原样存着走 —— 免得前端加一项配置就得改后端。
         // 只收标量：外来请求里塞对象、数组的一律丢掉。
         for (const [key, value] of Object.entries(body)) {
@@ -406,7 +421,17 @@ export function createApi(initialRoot) {
         }
         throw new Error('不认识的面板动作')
       }
-      if (route === '/api/runs') return send(res, 200, { items: runner.list(), triggers: scheduler.triggers(), evolve: evolver.status() })
+      // 更新状态跟着这一圈捎回去：前端不用为它另开一次轮询
+      if (route === '/api/runs') return send(res, 200, { items: runner.list(), triggers: scheduler.triggers(), evolve: evolver.status(), update: updater.status() })
+      // 更新（ADR-0033）：status 只是读；check 问 GitHub；download 下好预置；apply 换上并重启
+      if (route === '/api/update') {
+        const action = body.action ?? 'status'
+        if (action === 'status') return send(res, 200, updater.status())
+        if (action === 'check') return send(res, 200, await updater.check())
+        if (action === 'download') return send(res, 200, await updater.download())
+        if (action === 'apply') return send(res, 200, await updater.apply())
+        throw new Error('不认识的更新动作')
+      }
       // 运行事件日志（ADR-0031）：某一天的整份（或 after= 之后的增量）。面板读它画时间流。
       if (route === '/api/log') {
         if (!root) throw new Error('还没有工作文件夹')
