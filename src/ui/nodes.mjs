@@ -1,5 +1,5 @@
 // 节点层：渲染三类节点，处理拖动、缩放、选中、编辑、右键菜单。
-import { baseName, execOutAll, extensionOf, moveNode, normalizeFileName, reachable, resizeNode, setNodeBusy, setNodeCommand, setNodeConst, setNodeCwd, setNodeFile, setNodePick, setNodeSchedule, setNodeText } from '../core/graph.mjs'
+import { baseName, execOutAll, extensionOf, moveNode, normalizeFileName, reachable, resizeNode, setNodeBusy, setNodeCommand, setNodeComment, setNodeConst, setNodeCwd, setNodeFile, setNodePick, setNodeSchedule, setNodeText } from '../core/graph.mjs'
 import { CMD_BAR_H, INPUT_ROW } from '../core/geometry.mjs'
 import { findExtension, inputsOf, outputsOf, routeNameOf, routesOf, wiredNames } from '../core/inputs.mjs'
 import { looksLikePath } from '../core/tokens.mjs'
@@ -370,6 +370,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     const foot = el.querySelector('.node-foot')
     foot.textContent = active ? '运行中' : held ? `让路 · ${nameOf(state, held)} 在跑` : ''
     foot.title = held ? '这条链的链身被占着，点了不点火（节点上可以改成「照跑」）' : ''
+    fillComment(el, node)
     fillBusy(el, node)
   }
 
@@ -388,11 +389,24 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     return null
   }
 
-  // 占着链身的那条链叫什么：看它起步的那个会跑的节点（新存档都有名字，老存档可能空着）
+  // 占着链身的那条链叫什么：点火的触发节点上写的注释优先（ADR-0030），
+  // 没写才回落到链身起步的节点名（新存档都有名字，老存档可能空着）
   function nameOf(state, run) {
+    const fired = state.graph.nodes.find((item) => item.id === run.nodeId)
+    if (fired?.comment) return fired.comment
     const node = state.graph.nodes.find((item) => item.id === (run.headId || run.nodeId))
     if (!node) return '另一条链'
     return node.name || baseName(node) || '另一条链'
+  }
+
+  // 触发节点上那段注释：从这儿起步的链叫什么（ADR-0030）。空着就是占位提示，长了截断、悬停看全。
+  function fillComment(el, node) {
+    const box = el.querySelector('.node-comment')
+    const text = node.comment ?? ''
+    const label = text || (node.kind === 'entry' ? '链从这里开始' : '双击写这条链叫什么')
+    if (box.textContent !== label) box.textContent = label
+    box.classList.toggle('is-empty', !text)
+    box.title = text
   }
 
   // 「在跑就跳过 / 照跑」那一行：存档里缺 onBusy 就是「在跑就跳过」，跟后端同一个默认。
@@ -415,6 +429,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     el.classList.toggle('invalid', !schedule) // 认不出来就标红，别等到点才发现不响
 
     fillTimerForm(el, schedule)
+    fillComment(el, node)
     fillBusy(el, node)
 
     // 到点也只是「点一下火」：链身被占着就跟人手点一样不点火（ADR-0027）
@@ -504,9 +519,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
         : node.kind === 'get'
           ? `<div class="node-title"><span class="node-kind">获取</span><span class="node-file"></span></div>${TEXT_PORT}<div class="node-handle"></div>`
         : node.kind === 'entry'
-          ? `<div class="node-title"><span class="node-kind">入口</span></div><div class="node-body"><div class="node-hint">链从这里开始</div>${BUSY_FORM}</div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
+          ? `<div class="node-title"><span class="node-kind">入口</span></div><div class="node-body"><div class="node-comment"></div>${BUSY_FORM}</div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
           : node.kind === 'timer'
-            ? `<div class="node-cmd"></div><div class="node-body"><div class="timer-form">${TIMER_FORM}${BUSY_FORM}</div></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
+            ? `<div class="node-cmd"></div><div class="node-body"><div class="node-comment"></div><div class="timer-form">${TIMER_FORM}${BUSY_FORM}</div></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
             : node.kind === 'command'
               ? `<div class="node-cmd"></div><div class="node-inputs"></div><div class="node-outputs"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
               : `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
@@ -561,10 +576,9 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
         beginBodyEdit(el, current.pick ?? '', (value) => update((state) => setNodePick(state.graph, current.id, value)), el.querySelector('.node-cmd'))
       } else if (current.kind === 'get' || current.kind === 'set') {
         // 属性名跟面板走，节点上不改；获取也不跑
-      } else if (current.kind === 'timer') {
-        // 定时器：控件就长在节点上，不用再开一层编辑面（双击落在控件上由它自己处理）
-      } else if (current.kind === 'entry') {
-        // 入口上没有可编辑的东西：正文本只有一行字加「在跑就跳过 / 照跑」，跑链走右键菜单
+      } else if (current.kind === 'timer' || current.kind === 'entry') {
+        // 触发节点：控件就长在节点上（控件自己挡了双击），落在这儿的双击是来写注释的（ADR-0030）
+        beginCommentEdit(el, current)
       } else {
         beginBodyEdit(el, current.text, (value) => update((state) => setNodeText(state.graph, current.id, value)))
       }
@@ -650,6 +664,44 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     input.addEventListener('blur', () => finish(true))
     input.addEventListener('keydown', (event) => {
       event.stopPropagation()
+      if (event.key === 'Escape') finish(false)
+      if (event.key === 'Enter') finish(true)
+    })
+  }
+
+  // 注释：触发节点上就地写「这条链叫什么」。单行，回车或失焦保存、Esc 取消（ADR-0030）。
+  function beginCommentEdit(el, node) {
+    if (el.classList.contains('editing')) return
+    const box = el.querySelector('.node-comment')
+    if (!box) return
+    const original = node.comment ?? ''
+    const input = document.createElement('input')
+    input.className = 'node-comment-input'
+    input.value = original
+    input.placeholder = box.textContent
+    input.spellcheck = false
+
+    el.classList.add('editing')
+    box.hidden = true
+    box.after(input)
+    input.focus()
+    if (original) input.select()
+
+    let finished = false
+    function finish(commit) {
+      if (finished) return
+      finished = true
+      const next = input.value
+      input.remove()
+      box.hidden = false
+      el.classList.remove('editing')
+      if (commit && next.trim() !== original) update((state) => setNodeComment(state.graph, node.id, next))
+      else render(getState())
+    }
+
+    input.addEventListener('blur', () => finish(true))
+    input.addEventListener('keydown', (event) => {
+      event.stopPropagation() // 编辑时不把按键交给全局快捷键（Delete、Ctrl+Z 等）
       if (event.key === 'Escape') finish(false)
       if (event.key === 'Enter') finish(true)
     })

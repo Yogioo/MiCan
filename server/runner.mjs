@@ -66,7 +66,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     const error = new Error(
       holder.mode === 'node'
         ? '让不开：这个节点还在跑，等它结束'
-        : `让不开：从「${holder.headName}」起步的链还在跑，它的链身走到这儿`,
+        : `让不开：从「${holder.chainName}」起步的链还在跑，它的链身走到这儿`,
     )
     error.code = 'busy'
     return error
@@ -448,7 +448,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       trigger, // 谁开的这一次：manual 是人点的，timer 是定时器到点（后端自己开的）
       nodeId: id,
       headId: head,
-      headName: headNode.name || baseName(headNode),
+      // 这条链叫什么：点火的触发节点上写的注释优先（ADR-0030），没写才回落到链身起步节点的 name
+      chainName: node.comment || headNode.name || baseName(headNode),
       body, // 这次会走到（和会写）的那些会跑的节点：别人碰不碰得着看它（ADR-0027）
       startedAt: Date.now(),
       step: 0,

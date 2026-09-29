@@ -127,6 +127,14 @@ export function setNodeBusy(graph, id, busy) {
   node.onBusy = busy === 'run' ? 'run' : 'skip'
 }
 
+// 注释：触发节点上那段人写的白话，意思是「从这儿起步的链叫什么」（ADR-0030）。
+// 只有触发节点有这一项；它不参与跑图，谁都能改，别处一概不管它。
+export function setNodeComment(graph, id, comment) {
+  const node = findNode(graph, id)
+  if (!trigger(node)) return
+  node.comment = String(comment ?? '').trim()
+}
+
 export function findNode(graph, id) {
   return graph.nodes.find((node) => node.id === id) ?? null
 }

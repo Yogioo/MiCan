@@ -54,8 +54,8 @@ function logicOf(node) {
   }
   if (node.kind === 'extract') return { ...head, pick: node.pick ?? '' }
   if (node.kind === 'get' || node.kind === 'set') return { ...head, slot: node.slot ?? '' }
-  if (node.kind === 'timer') return { ...head, schedule: node.schedule ?? '', ...busyPatch(node) }
-  if (node.kind === 'entry') return { ...head, ...busyPatch(node) }
+  if (node.kind === 'timer') return { ...head, schedule: node.schedule ?? '', ...busyPatch(node), ...commentPatch(node) }
+  if (node.kind === 'entry') return { ...head, ...busyPatch(node), ...commentPatch(node) }
   return { ...head, file: node.file }
 }
 
@@ -94,6 +94,9 @@ const constsPatch = (node) => {
 // 触发节点上「链身被占时点不点火」那一项（ADR-0027）：只有不是默认的「照跑」才写进存档。
 const busyPatch = (node) => (node.onBusy === 'run' ? { onBusy: 'run' } : {})
 
+// 触发节点上那段人写的白话（ADR-0030）：空着就不写进存档，跟 onBusy 同一做法。
+const commentPatch = (node) => (node.comment ? { comment: node.comment } : {})
+
 // 外来的存档（手改、旧版本、写坏了）：常量只认非空字符串，其余一律丢掉。
 function constsIn(raw) {
   if (!raw || typeof raw !== 'object') return {}
@@ -103,6 +106,7 @@ function constsIn(raw) {
 }
 
 const objectOr = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {})
+const commentIn = (raw) => (typeof raw === 'string' ? raw.trim() : '')
 
 // 校验并还原：不认识的结构直接报错，能救的地方（尺寸过小、悬空的边、缺名字、缺位置）就地修掉。
 // 入参是拆开的那几份；6 版及以前只有 canvas 一份，位置、正文、结果、视图都从它身上取。
@@ -142,13 +146,14 @@ export function deserialize({ canvas: data, layout, texts, results } = {}, { cen
     if (node.kind === 'extract') return { ...head, kind: 'extract', pick: typeof node.pick === 'string' ? node.pick : '' }
     if (node.kind === 'get') return { ...head, kind: 'get', h: CMD_BAR_H, slot: typeof node.slot === 'string' ? node.slot : '' }
     if (node.kind === 'set') return { ...head, kind: 'set', slot: typeof node.slot === 'string' ? node.slot : '' }
-    if (node.kind === 'entry') return { ...head, kind: 'entry', onBusy: node.onBusy === 'run' ? 'run' : 'skip' }
+    if (node.kind === 'entry') return { ...head, kind: 'entry', onBusy: node.onBusy === 'run' ? 'run' : 'skip', comment: commentIn(node.comment) }
     if (node.kind === 'timer') {
       return {
         ...head,
         kind: 'timer',
         schedule: typeof node.schedule === 'string' && node.schedule.trim() ? node.schedule : DEFAULT_SCHEDULE,
         onBusy: node.onBusy === 'run' ? 'run' : 'skip',
+        comment: commentIn(node.comment),
       }
     }
     const file = typeof node.file === 'string' ? node.file : ''

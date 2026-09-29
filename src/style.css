@@ -720,8 +720,35 @@ body.evolving #board {
   font-size: 11px;
 }
 
-.node.kind-entry .node-hint {
+/* 触发节点上的注释：从这儿起步的链叫什么（ADR-0030）。一行，长了截断、悬停看全 */
+.node.kind-entry .node-comment,
+.node.kind-timer .node-comment {
+  overflow: hidden;
+  color: #6f5f2f;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.node.kind-entry .node-comment {
   text-align: center;
+}
+
+/* 空着时当占位提示，跟节点上别的灰字一个颜色 */
+.node.kind-entry .node-comment.is-empty,
+.node.kind-timer .node-comment.is-empty {
+  color: #b9ae90;
+}
+
+.node-comment-input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  user-select: text;
 }
 
 .node-port {
