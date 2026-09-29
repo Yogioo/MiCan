@@ -504,6 +504,18 @@ const sayIf = (message) => {
 const onRunCommand = (id) => startRun('node', id).then(sayIf)
 const onRunChain = (id) => startRun('chain', id).then(sayIf)
 
+// 插话（ADR-0032）：认节点 id，后端自己找「此刻正在跑的正是它」那一条运行。
+// 送不到就把话退回去（调用方把话留在框里），工具条上说一句为什么。
+const onSay = async (id, text, interrupt) => {
+  try {
+    await api('/api/say', { id, text, interrupt })
+    return ''
+  } catch (error) {
+    showMessage(error.message)
+    return error.message
+  }
+}
+
 // 右下角那个「开始」：从入口节点出发跑链。入口可以有好几枚（将来的子图各有各的入口），
 // 所以它把每一枚入口都点着。被拦下来的合成一句报 —— 消息条是覆盖式的，
 // 一枚一句的话，前面的几枚会被最后那句盖掉，看不见（ADR-0027）。
@@ -1105,6 +1117,7 @@ const nodes = mountNodes({
   onConnectStart: edges.startConnection,
   onRunCommand,
   onRunChain,
+  onSay,
   onNewTextNode: (world) => createNodeAt(world, 'text'),
   onNewCommandNode: (world) => createNodeAt(world, 'command'),
   onNewExtractNode: (world) => createNodeAt(world, 'extract'),

@@ -451,6 +451,8 @@ export function createApi(initialRoot) {
         return send(res, 200, { status, log, prompts, archive: root ? await readArchive(root).catch(() => null) : null })
       }
       if (route === '/api/run') return send(res, 200, await runner.start({ id: body.id, mode: body.mode }))
+      // 插话（ADR-0032）：认节点 id，后端自己找「此刻正在跑的正是它」那一条运行
+      if (route === '/api/say') return send(res, 200, runner.say(body.id, body.text, body.interrupt === true))
       if (route.startsWith('/api/run/') && route.endsWith('/stop')) {
         return send(res, 200, runner.stop(route.slice('/api/run/'.length, -'/stop'.length)))
       }

@@ -1238,6 +1238,68 @@ body.evolving #board {
   display: none;
 }
 
+/* 插话（ADR-0032）：只有正在跑、而且这份扩展声明了收话的节点才露出来。
+   挤在脚上那一行之上，正文给它让出位置 —— 人盯着的就是正文最后那几行。 */
+.node-say {
+  display: none;
+  position: absolute;
+  right: 0;
+  bottom: 24px;
+  left: 0;
+  gap: 4px;
+  align-items: center;
+  height: 30px;
+  padding: 0 6px;
+  border-top: 1px solid #d9e3f5;
+  background: #f4f8ff;
+}
+
+.node.talking .node-say {
+  display: flex;
+}
+
+.node.talking .node-foot {
+  color: #4a7fe0;
+}
+
+.node.talking.kind-command .node-body {
+  bottom: 54px;
+}
+
+.node-say .say-text {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid #d9e3f5;
+  border-radius: 5px;
+  background: #fff;
+  color: #333;
+  font: inherit;
+  font-size: 11px;
+}
+
+.node-say .say-text:focus {
+  border-color: #4a7fe0;
+  outline: 0;
+}
+
+.node-say button {
+  flex: none;
+  padding: 3px 6px;
+  border: 1px solid #c9d8f2;
+  border-radius: 5px;
+  background: #fff;
+  color: #3f6bb8;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.node-say button:hover {
+  background: #e8f0fe;
+}
+
 /* 编辑面盖在正文上：那些占位提示（双击编辑 / 还没有输出）先让开 */
 .node.editing .node-body::before {
   display: none;
@@ -1977,6 +2039,33 @@ body.evolving #board {
 
 .log-run.bad > summary {
   color: #8c2f22;
+}
+
+/* 插话（ADR-0032）：跟在那一步下面。全文就在行里，不用点开去读附件。 */
+.log-say-chip {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #eef4ff;
+  color: #3f6bb8;
+}
+
+.log-say {
+  margin-top: 4px;
+  padding: 3px 7px;
+  border-left: 3px solid #4a7fe0;
+  border-radius: 3px;
+  background: #f4f8ff;
+  color: #3f6bb8;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.log-say.cut {
+  border-left-color: #c07a2a;
+  background: #fdf6ea;
+  color: #8a5a1a;
 }
 
 .log-steps {

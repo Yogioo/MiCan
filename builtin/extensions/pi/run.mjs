@@ -10,10 +10,18 @@
 // 清单带了前缀的（`--provider {{提供商}}`）连前面那个开关一起抹掉，清单是整串的（`{{工具}}`）
 // 就抹掉它自己。所以加开关只用改 EXTENSION.md，不用改这个文件。
 //
-// **跑的是 `--mode json`，不是 `-p`**：`-p` 只吐回话，它在干什么一概看不见；`--mode json` 把
-// 每一步（第几轮、调了哪个工具、说了什么）都吐成一行 JSON。这个文件把那些行翻成人话写 **stderr** ——
+// **跑的是 `--mode rpc`，不是 `-p` 也不是 `--mode json`**：`-p` 只吐回话，它在干什么一概看不见；
+// `--mode json` 看得见，但它是一次性的（stdin 只喂第一条提示词，喂完就走到头）。
+// `--mode rpc` 把每一步（第几轮、调了哪个工具、说了什么）都吐成一行 JSON，**而且长驻**：
+// stdin 一直收着，人能往里面塞一句话（见下面「插话」）。这个文件把那两路的行翻成人话写 **stderr** ——
 // 那是「诊断」那条路，MiCan 把它铺在节点的正文上，跑完还存成 .log 边车文件。
 // **stdout 仍然只有一段 JSON**：值那条路一点没变，下游照样解析。
+//
+// 插话（ADR-0032）：MiCan 往这个进程的 stdin 写一行一段 JSON，`{"say":"……","interrupt":false}`。
+// `interrupt: false` 是「添加并发送」→ 转成 pi 的 `steer`（它手上这一轮做完就收到）；
+// `interrupt: true` 是「中断并发送」→ `clear_queue` → `abort` → 等它答了再 `prompt`，
+// 把这句当一条新指令交过去。运行结束的判据是 `agent_settled`：pi 在 rpc 下**不会自己退**，
+// 得自己关 stdin 让它收工。
 import { spawn } from 'node:child_process'
 import fs from 'node:fs/promises'
 
@@ -24,6 +32,21 @@ const KEEP_SESSION = '--留会话'
 const SESSION_ID = '--会话'
 const IS_WINDOWS = process.platform === 'win32'
 const say = (value) => process.stdout.write(`${JSON.stringify(value)}\n`)
+
+// ---- 通往 pi 的那一头 ----
+// rpc 模式下 stdin 是一根真的管子，一直开着：第一行是提示词，之后人插的话也从这儿进。
+let writeToPi = null
+const toPi = (record) => {
+  if (!writeToPi) return false
+  try {
+    writeToPi(`${JSON.stringify(record)}\n`)
+    return true
+  } catch {
+    return false
+  }
+}
+// 会阻塞等人答的那几个：这儿没有人答，一律回「取消」（见 trace 里那一条）。
+const DIALOGS = new Set(['select', 'confirm', 'input', 'editor'])
 
 // 回话若本身是一段 JSON 对象，把它自己的原始值键抄到顶层（不覆盖 ok）。
 function parseObject(text) {
@@ -200,8 +223,14 @@ function describeResult(result) {
 // 回话原样过（它本来就是给人读的），思考只报长短 —— 那是模型的草稿纸，铺满正文反而把动作挤没了。
 function trace(event, state) {
   switch (event.type) {
-    case 'session':
-      line(`· 起于 ${event.cwd}`, 0)
+    // rpc 下没有 `session` 那条记录了（「· 起于 …」改在 runPi 里自己写）
+    case 'extension_ui_request':
+      // 对话框会阻塞等人答，而这儿没有人答 —— 一律回「取消」，别让它干等（ADR-0032）。
+      // 剩下那几种（notify / setStatus / …）不等回答，直接不管：它们只会在正文上添乱。
+      if (DIALOGS.has(event.method)) {
+        line(`· pi 要等人答一句（${event.method}），这儿没人答，已当取消处理`)
+        toPi({ type: 'extension_ui_response', id: event.id, cancelled: true })
+      }
       break
     case 'turn_start':
       state.turns += 1
@@ -266,10 +295,54 @@ function makeReader(onLine) {
   }
 }
 
-// 跑 pi：stdout 是事件流，stderr 原样转进诊断。跑完把退出码交回来，回话攒在 state 里。
+// 跑 pi：stdout 是事件流（rpc 下另多几类记录，认不出的自然忽略），stderr 原样转进诊断。
+// 结束的判据是 `agent_settled` —— rpc 下 pi 不会自己退，到了就关它的 stdin 让它收工。
+// 跑完把退出码交回来，回话攒在 state 里。
 const runPi = (args, input, cwd, state) =>
   new Promise((done) => {
     const child = startPi(args, cwd)
+    writeToPi = (text) => child.stdin.write(text)
+    line(`· 起于 ${cwd}`, 0)
+    // ---- 收话（见文件头）----
+    // 「中断并发送」的几句话：先停下它手上这一步，等 abort 的响应到了才交过去。
+    const waiting = []
+    const inject = (raw) => {
+      if (state.closing) return // 已经收尾了，这句晚了
+      let command = null
+      try {
+        command = JSON.parse(raw)
+      } catch {
+        return // 不是给人插话用的东西，丢掉
+      }
+      const text = String(command?.say ?? '').trim()
+      if (!text) return
+      const brief = text.length > 80 ? `${text.slice(0, 80)}…` : text
+      if (command.interrupt === true) {
+        // 人此刻说的算：先把还没进 pi 的那几句清掉，再停下它手上这一步
+        line(`· 插话（先停下）：${brief}`)
+        toPi({ type: 'clear_queue' })
+        toPi({ type: 'abort' })
+        waiting.push(text)
+        state.pending += 1
+      } else {
+        line(`· 插话（不打断）：${brief}`)
+        toPi({ type: 'steer', message: text })
+      }
+      state.lastAt = Date.now()
+    }
+    // abort 的响应到了 = 会话已经静下来，这时候才把新指令交过去
+    const flush = () => {
+      while (waiting.length) {
+        toPi({ id: `say-${state.said}`, type: 'prompt', message: waiting.shift() })
+        state.said += 1
+        state.pending -= 1
+      }
+    }
+    const settle = () => {
+      state.closing = true
+      process.stdin.pause() // 不再收话，也让这个进程能自己走
+      child.stdin.end()
+    }
     const read = makeReader((raw) => {
       let event = null
       try {
@@ -280,6 +353,12 @@ const runPi = (args, input, cwd, state) =>
       if (!event) return
       state.lastAt = Date.now()
       trace(event, state)
+      if (event.type === 'response') {
+        if (event.command === 'abort' && event.success) flush()
+        else if (event.success === false) line(`· pi 没认下这条命令：${event.command} ${event.error ?? ''}`)
+      }
+      // agent_settled = 「不会自己接着干了」。人那句还在路上时不能收尾，否则它永远交不出去。
+      if (event.type === 'agent_settled' && state.pending === 0 && !state.closing) settle()
     })
     child.stdout.on('data', (chunk) => {
       state.lastAt = Date.now()
@@ -294,10 +373,18 @@ const runPi = (args, input, cwd, state) =>
     child.on('error', (error) => done({ error }))
     child.on('close', (code) => {
       read.flush()
+      writeToPi = null
+      process.stdin.pause()
       done({ code: typeof code === 'number' ? code : 1 })
     })
     child.stdin.on('error', () => {}) // pi 没读 stdin 就走了：别让 EPIPE 把脚本带崩
-    child.stdin.end(input)
+    // 第一条提示词也走 stdin：rpc 收的是 JSONL 命令，不是命令行上的参数
+    toPi({ id: 'prompt', type: 'prompt', message: input })
+    // 人插的话从这儿进。stdin 一关（没收话的节点、或老的调用方式）就只是没这条路，不影响跑。
+    const said = makeReader(inject)
+    process.stdin.on('data', (chunk) => said.push(chunk))
+    process.stdin.on('error', () => {})
+    process.stdin.on('end', () => {})
   })
 
 try {
@@ -313,12 +400,12 @@ try {
     const list = strays.map((item) => `「${item}」`).join('')
     throw new Error(`${list}不是开关，会被 pi 当成提示词（一条独立的消息）。开关框的写法看扩展的 args 行：带了前缀的（--provider {{提供商}}）只填值 sub2api，整串开关那一栏（{{工具}}）才写 --tools read,bash`)
   }
-  // --mode json：说完就退，而且全程有事件可看。stdin 里那份正文就是这一轮的消息，
+  // --mode rpc：长驻，全程有事件可看，人也插得上话（ADR-0032）。stdin 上那份正文就是这一轮的消息，
   // 多长、多少行都无所谓。有会话 id 就钉死那一份（没有就建）；没有 id 才看留会话。
-  const args = ['--mode', 'json', ...rest]
+  const args = ['--mode', 'rpc', ...rest]
   if (sessionId) args.push('--session-id', sessionId)
   else if (!keepSession) args.push('--no-session')
-  const state = { lastAt: Date.now(), turns: 0, tools: 0, answer: '', err: '', toolAt: new Map(), toolMs: 0, thinkAt: undefined }
+  const state = { lastAt: Date.now(), turns: 0, tools: 0, answer: '', err: '', toolAt: new Map(), toolMs: 0, thinkAt: undefined, said: 0, pending: 0, closing: false }
   // 卡住得看得出来：二十分钟没动静和「正在想」在画布上一模一样，所以静下来就把等了多久写出来
   const beat = setInterval(() => {
     const idle = Math.round((Date.now() - state.lastAt) / 1000)

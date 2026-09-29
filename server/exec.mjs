@@ -69,10 +69,14 @@ function killTree(child) {
 // 超时和输出上限都在这儿管：超时掐进程；超上限只截断、不杀进程 —— 杀掉等于把 agent 的活白干了。
 // 上限是两条流合起来算的，一条话痨的诊断流别想把内存撑爆。
 // 命令读 stdin 的（如 pi -p）靠 stdin.end() 拿 EOF，否则会一直挂到超时。
-export function startCommand({ command, cwd, shell, timeout, outputLimit, onChunk }) {
+// talk：这份扩展收「插话」（ADR-0032）—— 那就不 end，留着让调用方往里写一行；
+// 别的命令照旧立刻 end，一秒也不多等。
+export function startCommand({ command, cwd, shell, timeout, outputLimit, onChunk, talk = false }) {
   const launch = shellOf(shell, command) // 名字不认识就抛，调用方去报错
   const child = spawn(launch.file, launch.args, { cwd, windowsHide: true, windowsVerbatimArguments: launch.verbatim })
-  child.stdin.end()
+  // 收话的那条路不能 end：EOF 一到，那一头的收话循环就散了
+  if (talk) child.stdin.on('error', () => {}) // 它先走了：别让 EPIPE 把这一次运行带崩
+  else child.stdin.end()
 
   const decode = createDecoder()
   let output = ''
@@ -84,10 +88,16 @@ export function startCommand({ command, cwd, shell, timeout, outputLimit, onChun
   let stopped = false
   let settled = false
 
-  const timer = setTimeout(() => {
-    timedOut = true
-    killTree(child)
-  }, timeout * 1000)
+  // 超时从起跑算起；人一插话就重新计（一次插话 = 续一次命）—— 超时是防卡死，不是防人聊得久（ADR-0032）。
+  let timer = null
+  const arm = () => {
+    clearTimeout(timer)
+    timer = setTimeout(() => {
+      timedOut = true
+      killTree(child)
+    }, timeout * 1000)
+  }
+  arm()
 
   // kind：'out' 是值，'log' 是诊断。两条流共用一份字节预算，超了就一起截断。
   function sink(kind) {
@@ -126,6 +136,17 @@ export function startCommand({ command, cwd, shell, timeout, outputLimit, onChun
 
   return {
     done,
+    // 往里写一行（插话的路，ADR-0032）。没收话的、或者进程已经收了尾，就交回 false 让调用方去报。
+    say(line) {
+      if (!talk || settled || !child.stdin.writable) return false
+      try {
+        child.stdin.write(line)
+        return true
+      } catch {
+        return false
+      }
+    },
+    touch: arm,
     stop() {
       if (settled) return
       stopped = true

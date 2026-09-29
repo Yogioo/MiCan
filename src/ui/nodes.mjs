@@ -37,7 +37,7 @@ export function isActLine(row) {
 // 脚上的时刻：默认只到分；秒级定时器要看到秒，不然一秒响一次也像什么都没发生
 const clockOf = (ts, withSeconds = false) => new Date(ts).toTimeString().slice(0, withSeconds ? 8 : 5)
 
-export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onNewTextNode, onNewCommandNode, onNewExtractNode, onNewEntryNode, onNewTimerNode, onNewExtensionNode, onSetRunDir, onOpenLog }) {
+export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onNewTextNode, onNewCommandNode, onNewExtractNode, onNewEntryNode, onNewTimerNode, onNewExtensionNode, onSetRunDir, onOpenLog, onSay }) {
   const layer = document.getElementById('nodes')
   const viewport = document.getElementById('viewport')
   const elements = new Map()
@@ -105,6 +105,12 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     // 查不到就是坏引用 —— 标红、提示路径，但连线一个不动。
     const ext = extensionOf(node)
     const extName = ext ? findExtension(state.extensions?.items, ext)?.label ?? '' : ''
+    // 插话（ADR-0032）：只有「正在跑 + 这份扩展收话」时才露出来。跑完就收起来，
+    // 草稿也一并扔掉 —— 它本来就只是界面上的临时状态，跟「选中」一个待遇。
+    const canSay = running && Boolean(findExtension(state.extensions?.items, ext)?.talk)
+    el.classList.toggle('talking', canSay)
+    if (el._talking && !canSay) el.querySelector('.say-text').value = ''
+    el._talking = canSay
     // 输入端口区先摆好 —— 正文得按它的高度往下让
     renderInputs(el, node, state)
     renderOutputs(el, node, state)
@@ -489,6 +495,15 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     '<div class="node-port port-data" data-kind="data" title="数据端口：连文本节点或会跑的节点"></div>'
   const TEXT_PORT = '<div class="node-port port-data" data-kind="data" title="数据端口：把正文喂给会跑的节点"></div>'
 
+  // 插话（ADR-0032）：只有「正在跑 + 这份扩展收话」时才露出来。Enter 是不打断那一档，
+  // Ctrl/Alt+Enter 才是打断 —— 硬停不该是随手一下回车就能碰到的。
+  const SAY_BOX =
+    '<div class="node-say">' +
+    '<input class="say-text" type="text" placeholder="插一句…" spellcheck="false">' +
+    '<button type="button" class="say-add" title="添加并发送（Enter）：不打断，等它手上这一轮做完再交过去">添加并发送</button>' +
+    '<button type="button" class="say-cut" title="中断并发送（Ctrl+Enter）：先停下它手上这一步，再把这句当新指令交过去">中断并发送</button>' +
+    '</div>'
+
   // 定时器的控件：模式（固定间隔 / 每天）、间隔的数值与单位、每天的时刻。
   // 这里是模板，值由 fillTimerForm 填；改控件打的是同一条路 —— 写回一行时间表文本。
   const TIMER_FORM =
@@ -523,7 +538,7 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
           : node.kind === 'timer'
             ? `<div class="node-cmd"></div><div class="node-body"><div class="node-comment"></div><div class="timer-form">${TIMER_FORM}${BUSY_FORM}</div></div><div class="node-foot"></div>${EXEC_PORT}<div class="node-handle"></div>`
             : node.kind === 'command'
-              ? `<div class="node-cmd"></div><div class="node-inputs"></div><div class="node-outputs"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
+              ? `<div class="node-cmd"></div><div class="node-inputs"></div><div class="node-outputs"></div><div class="node-body"></div><div class="node-foot"></div>${SAY_BOX}${RUN_PORTS}<div class="node-handle"></div>`
               : `<div class="node-cmd"></div><div class="node-body"></div><div class="node-foot"></div>${RUN_PORTS}<div class="node-handle"></div>`
 
     const execOut = el.querySelector('.port-exec:not(.port-exec-in)')
@@ -559,6 +574,26 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
           if (current) update((state) => setNodeBusy(state.graph, current.id, button.dataset.busy))
         })
       }
+    }
+    // 插话那一行：框里的按键不外泄（打 Delete 不该删节点、Ctrl+Z 不该撤画布），
+    // 也不该被当成双击编辑正文。送不到的话留在框里 —— 为什么送不到由工具条说。
+    if (node.kind === 'command') {
+      const box = el.querySelector('.node-say')
+      const input = box.querySelector('.say-text')
+      for (const kind of ['pointerdown', 'dblclick', 'keydown']) box.addEventListener(kind, (event) => event.stopPropagation())
+      const send = async (interrupt) => {
+        const text = input.value.trim()
+        if (!text) return
+        const failed = await onSay(el.dataset.id, text, interrupt)
+        if (!failed) input.value = ''
+      }
+      box.querySelector('.say-add').addEventListener('click', () => send(false))
+      box.querySelector('.say-cut').addEventListener('click', () => send(true))
+      input.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter') return
+        event.preventDefault()
+        send(event.ctrlKey || event.altKey || event.metaKey)
+      })
     }
     el.addEventListener('pointerdown', onPointerDown)
     el.addEventListener('dblclick', (event) => {

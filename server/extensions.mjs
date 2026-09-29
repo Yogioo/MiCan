@@ -55,6 +55,7 @@ function parseManifest(text) {
     outputs: nested.outputs,
     route: fields.route ?? '',
     routes: parseRoutes(fields.routes),
+    talk: fields.talk === 'true',
     docs: (match[2] ?? '').trim(),
   }
 }
@@ -88,6 +89,7 @@ export async function scanExtensions(root) {
         outputs: meta.outputs,
         route: meta.route,
         routes: meta.routes,
+        talk: meta.talk,
         docs: meta.docs,
       }
     }
@@ -121,6 +123,7 @@ export async function commandOf(root, rel) {
   if (entry === dir || !entry.startsWith(dir + path.sep)) throw new Error(`扩展 ${rel} 的 entry 跑到了目录外面：${meta.entry}`)
   const args = meta.args.trim()
   // defaults / outputs / route 一并交回去：输入兜底、出口与选路都现读清单（ADR-0015 / ADR-0017）
+  // talk：这份扩展收「插话」——运行时 stdin 留着，命令那一头有人往里写（ADR-0032）
   return {
     command: `node "${entry}"${args ? ` ${args}` : ''}`,
     entry,
@@ -128,6 +131,7 @@ export async function commandOf(root, rel) {
     defaults: meta.defaults,
     outputs: meta.outputs,
     route: meta.route,
+    talk: meta.talk,
   }
 }
 

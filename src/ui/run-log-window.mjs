@@ -59,7 +59,7 @@ export function mountRunLogWindow({ actions }) {
   function ingest(incoming) {
     for (const row of incoming) {
       if (row.t === 'run') {
-        const item = { key: row.runId, kind: 'run', run: row, steps: [], end: null }
+        const item = { key: row.runId, kind: 'run', run: row, steps: [], says: [], end: null }
         byRun.set(row.runId, item)
         items.push(item)
         continue
@@ -71,6 +71,8 @@ export function mountRunLogWindow({ actions }) {
       const item = byRun.get(row.runId)
       if (!item) continue // run 行在更早那份文件里：半截行，不画
       if (row.t === 'step') item.steps.push(row)
+      // 插话（ADR-0032）：挂在那一步上，全文就在行里（它不是值，没有附件）
+      else if (row.t === 'say') item.says.push(row)
       else if (row.t === 'end') item.end = row
       if (item.el) dirty.add(item)
     }
@@ -100,7 +102,8 @@ export function mountRunLogWindow({ actions }) {
     }
   }
 
-  function stepRow(step) {
+  function stepRow(step, says = []) {
+    const mine = says.filter((row) => row.node === step.node && row.step === step.step)
     const box = document.createElement('details')
     box.className = 'log-step'
     box.dataset.node = step.node
@@ -109,6 +112,7 @@ export function mountRunLogWindow({ actions }) {
       [String(step.step ?? ''), 'log-step-no'],
       [nodeLabel(step), 'log-node'],
       [step.digest ? `out ${step.digest}` : '', 'log-digest'],
+      [mine.length ? `插话 ×${mine.length}` : '', 'log-say-chip'],
       [step.ms !== undefined ? ms(step.ms) : '', 'log-ms'],
       [step.route !== undefined ? `route「${step.route}」` : '', 'log-route'],
       [step.failed ? `退出 ${step.code}` : step.code ? `退出 ${step.code}` : '', step.failed ? 'log-code bad' : 'log-code'],
@@ -129,6 +133,12 @@ export function mountRunLogWindow({ actions }) {
       [step.in ? '输入快照' : '', step.out ? '输出全文' : '', step.log ? '诊断' : ''].filter(Boolean).join(' · ') ||
       '没有留下全文'
     detail.append(focus, io)
+    for (const said of mine) {
+      const block = document.createElement('div')
+      block.className = `log-say${said.interrupt ? ' cut' : ''}`
+      block.textContent = `${clock(said.at)} 人插话（${said.interrupt ? '中断并发送' : '添加并发送'}）：${said.text}`
+      detail.append(block)
+    }
     box.append(sum, detail)
     // 三折：展开这一层才去读附件（秒级任务下全文可能很多）
     box.addEventListener('toggle', () => {
@@ -207,7 +217,7 @@ export function mountRunLogWindow({ actions }) {
     box._tail.title = end?.message ?? ''
     box.classList.toggle('bad', isBad(outcome))
     box.classList.toggle('running', !end)
-    box._steps.replaceChildren(...item.steps.map((step) => stepRow(step)))
+    box._steps.replaceChildren(...item.steps.map((step) => stepRow(step, item.says)))
   }
 
   function skipRow(item) {

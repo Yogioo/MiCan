@@ -227,6 +227,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     let defaults = {}
     let outputs = {}
     let route = ''
+    // 这份扩展收「插话」（ADR-0032）：stdin 留着不关，人能在它跑着的时候塞一句进来
+    let talk = false
     if (ext) {
       try {
         const built = await commandOf(run.root, ext)
@@ -234,6 +236,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
         defaults = built.defaults ?? {}
         outputs = built.outputs ?? {}
         route = built.route ?? ''
+        talk = built.talk === true
       } catch (error) {
         return { error: error.message }
       }
@@ -246,7 +249,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     const problems = [...new Set([...errors, ...injected.problems])]
     if (problems.length) return { error: `变量没对上：${problems.join('；')}` }
 
-    run.current = { nodeId: id, output: '', log: '', startedAt, child: null }
+    run.current = { nodeId: id, output: '', log: '', startedAt, child: null, talk }
     emit(run, { t: 'step', nodeId: id, step, startedAt, targets: targets.map((item) => item.id) })
     const settings = await readSettings()
     const child = startCommand({
@@ -255,6 +258,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       shell: settings.shell,
       timeout: settings.timeout,
       outputLimit: settings.outputLimitKb * 1024,
+      talk,
       onChunk: (text, stream) => {
         // 值归 output，诊断归 log：两路分开攒，也分开告诉前端该往哪一栏放
         if (stream === 'log') run.current.log += text
@@ -510,6 +514,38 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     return { runId: run.id }
   }
 
+  // ---- 插话（ADR-0032）----
+
+  // 「此刻正在跑的正是这枚节点」的那条运行。占用（ADR-0027）保证同时只有一条碰得到它。
+  function currentOf(id) {
+    for (const run of runs.values()) {
+      if (!run.active) continue
+      if (run.current?.nodeId === id && run.current.child) return run
+    }
+    return null
+  }
+
+  // 插话：往那一步的 stdin 写一行 JSON，扩展自己翻成 pi 的命令（协议归扩展，见 ADR-0032）。
+  // 送不到就当没说过 —— 报回去让人看见，别默默丢掉一句人对 agent 说的话。
+  function say(id, text, interrupt = false) {
+    const said = String(text ?? '').trim()
+    if (!said) throw new Error('这句话是空的')
+    const run = currentOf(id)
+    if (!run) throw new Error('这一步已经跑完了，这句话没送出去')
+    if (!run.current.talk) throw new Error('这一步不收话')
+    const at = Date.now()
+    if (!run.current.child.say(`${JSON.stringify({ say: said, interrupt: interrupt === true })}\n`)) {
+      throw new Error('这一步已经跑完了，这句话没送出去')
+    }
+    run.current.child.touch() // 人在参与，这一段不该算给超时
+    const node = findNode(run.graph, id)
+    // 全文就在行上：它是一句人话，跟 end 的 message、skip 的 note 一样，不是值，不进附件
+    const row = { t: 'say', runId: run.id, at, node: id, name: node?.name ?? '', step: run.step, interrupt: interrupt === true, text: said }
+    logRow(run, row)
+    emit(run, { t: 'say', nodeId: id, at, interrupt: row.interrupt, text: said })
+    return { ok: true }
+  }
+
   // 停止：掐掉正在跑的那条命令；空档里没有进程可掐，记一笔让走路下一圈自己停
   function stop(runId) {
     const run = runs.get(runId)
@@ -557,5 +593,5 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     while ([...runs.values()].some((run) => run.active)) await new Promise((done) => setTimeout(done, 100))
   }
 
-  return { start, stop, stopAll, list, attach, owns, ownsFile, has: (runId) => runs.has(runId) }
+  return { start, stop, say, stopAll, list, attach, owns, ownsFile, has: (runId) => runs.has(runId) }
 }
