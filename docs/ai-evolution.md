@@ -29,34 +29,36 @@ AI 生成图只是这两样补齐之后自然掉出来的东西，不是起点�
 改链落到 `mican.json`，改提示落到那份 md，改动作落到 `EXTENSION.md` 和它的 entry。
 所以「AI 改工作流」这件事**不需要新架构**，只需要补三样现在没有的东西。
 
-### 一、运行历史（已实现，见 [ADR-0020](adr/0020-run-history.md)）
+### 一、运行日志（已实现，见 [ADR-0020](adr/0020-run-history.md) 与接手的 [ADR-0031](adr/0031-run-event-log.md)）
 
 以前只留「最近一次」：`runner` 写 `<节点id>.out` 和它的 `.log`，`results` 每个节点一份，
 `scheduler` 的 50 条 hits 只在内存里。**没有历史就没有进化信号** ——
 「这条边从来没走过」「这个提取节点连败 8 次」都看不见，AI 会把随机噪声当趋势。
 
-这是唯一不可省的基建。落在 `.mican/runs.jsonl`，一行一次运行：
+这是唯一不可省的基建。落在 `.mican/log/<日期>.jsonl`，按天一份，一行一件事（`t` 分 run / step / skip / end）：
 
 ```json
-{"at":1730000000000,"node":"n7","chain":"n1","by":"timer","route":"有单","code":0,"failed":false,"ms":18342,"log":"1730000000000-n7.log"}
+{"t":"run","runId":"r1abc","at":1730000000000,"mode":"chain","by":"timer","from":"n1","chain":"收单链","head":"n2","cleared":["n2"]}
+{"t":"step","runId":"r1abc","at":1730000000012,"node":"n2","name":"拉工单","step":1,"ms":1834,"code":0,"failed":false,"route":"有单","routeValue":"3 单","digest":"3 单待处理","out":".mican/runs/2026-01-01/…-n2.out","in":".mican/runs/2026-01-01/…-n2.in.json"}
+{"t":"end","runId":"r1abc","at":1730000000012,"outcome":"ok","steps":4,"ms":12400,"message":"链路跑完：4 步，走到一个没有出边的节点"}
 ```
 
-`chain` 是发起这次运行的节点（入口或定时器；单独跑一个节点就是它自己），`route` 是这一步走的那根执行边的标签，
-没往下走就没有这一列。值本身不进这里（值已经在缓存文件和 `<节点id>.out` 里，重复存只会把文件撑大）。
-条目按时间追加，不做轮转 —— 真要清，用户自己删。
+`chain` 是人写的链名（触发节点上的注释优先，其次起步节点的 name），`by` 是 `manual` / `timer`，
+`route` 是这一步走的那根执行边的标签。值不内联在行里 —— 它进同一天的附件
+（`.mican/runs/<日期>/<at>-<节点id>{.out,.log,.in.json}`），行上只记引用和给列表看的摘要；
+自动进化「攒够多少次运行」数的是 `run` 行，`streak` 数的是 `step` 行的 `failed`。
 
 这一行只看得见节点**外面**：走了哪条分路、成没成、多久。「哪些事代码也能做」藏在节点**里面** ——
-比如 pi 的 `.log` 里一轮一轮的工具调用（翻代码、看共享盘、读图）。所以 `runner` 对**每个会跑的节点**，只要有 stderr，
-就把 `.log` 按次另存一份（`.mican/runs/<at>-<节点id>.log`），`runs.jsonl` 那一行记上它的文件名。
-不分节点种类：以后接 codex cli 之类，只要照扩展约定写，历史自动就有，本体不用为它改。
+比如 pi 的 `.log` 里一轮一轮的工具调用（翻代码、看共享盘、读图），所以 stderr 也照次收成附件。
+不分节点种类：以后接 codex cli 之类，只要照扩展约定写，日志自动就有，本体不用为它改。
 
 但 `runner` 只存得下扩展吐出来的东西，信息够不够取决于 stderr 里写了什么。所以扩展约定里加了一条
 （已实现，见 [ADR-0021](adr/0021-action-lines-in-stderr.md)）：
 **agent 类扩展把每一步动作写进 stderr，一步一行 JSON**（如 `{"tool":"read","args":{...}}`），各家自己转格式。
 这样诊断扩展只写一份解析，不必逐家适配。人话照写，画布显示时藏掉动作行。
 
-体积要留意：agent 的 `.log` 一次可能几百 KB，所以另存的 `.log` 每个节点只留最近 N 次（机器设置 `runLogKeep`，默认 20）。
-`.out` 不按次存：诊断用不上，也不做改前改后的输出对比。
+体积要看住：`logKeepDays`（机器设置，默认 7 天）是唯一的规模控制，按天的 jsonl 连带同一天的附件整份删。
+stdout / stderr 为空就不落文件。
 
 ### 二、图的可改文本形态（已实现，见 [ADR-0023](adr/0023-split-archive.md)）
 
@@ -114,7 +116,7 @@ AI 改 `mican.json` 会被噪声带偏：坐标、每跑一次就变的 `results
 进化窗口滚动显示过程，画布跟着盘上的改动实时刷新，改过的节点标出来。
 
 1. **落盘运行历史**：上面第一条，已实现（ADR-0020）。改的是 `runner`，不是画布。
-2. **诊断扩展**（已实现，`builtin/extensions/diagnose`；「是不是这次改动之后才开始的」也已实现，见 [ADR-0025](adr/0025-diagnose-since-change.md)）：吃 `.mican/runs.jsonl` 和另存的 `.log`，吐一段 JSON —— 从不走的边、连败的节点、平均步数、
+2. **诊断扩展**（已实现，`builtin/extensions/diagnose`；「是不是这次改动之后才开始的」也已实现，见 [ADR-0025](adr/0025-diagnose-since-change.md)）：吃 `.mican/log/*.jsonl` 和它引用的附件，吐一段 JSON —— 每条链的结局分布、从不走的边、连败的节点、平均步数、
    哪里卡住，以及**多次运行里 agent 都在重复的那串工具调用**（它们是改写成脚本的候选）。
    它同时是**上下文压缩器**：进化每次都要把图和历史塞给模型，
    成本全靠这一步把几千次运行压成十行。

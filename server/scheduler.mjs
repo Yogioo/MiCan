@@ -1,9 +1,10 @@
 // 定时器：后端持有时刻表，到点自己从入口出发跑一整条链（ADR-0005）。
 // 它读盘上的 mican.json 找定时器节点和它指的入口节点；时刻表跟着前端每次落盘重新装载
 // （api.mjs 在 save / 打开工作文件夹之后调 sync），所以不用轮询文件、也不需要页面在场。
-import { execOutAll } from '../src/core/graph.mjs'
+import { baseName, execOutAll, findNode } from '../src/core/graph.mjs'
 import { nextFireAt, parseSchedule } from '../src/core/schedule.mjs'
 import { loadArchive, patchResults } from './archive.mjs'
+import { appendRow } from './run-log.mjs'
 
 // 触发记录留一会儿：页面每几秒来问一次（/api/runs 带着 triggers），用它把「上次响没响」摊到节点上。
 const KEEP_HITS = 50
@@ -20,11 +21,28 @@ export function createScheduler({ getRoot, runChain, isPaused = () => false }) {
     if (hits.length > KEEP_HITS) hits.shift()
   }
 
+  // 点火了但没跑：自己写一行 skip（ADR-0031）。「为什么今天这条链一次没动」只有定时器能回答，
+  // 运行器那边只会在 remember 里写「跑了的」。
+  async function logSkip(timerId, why, note) {
+    const root = getRoot()
+    if (!root) return
+    const graph = (await loadArchive(root).catch(() => null))?.graph
+    const node = graph ? findNode(graph, timerId) : null
+    const headId = graph ? execOutAll(graph, timerId)[0]?.to : ''
+    const head = graph && headId ? findNode(graph, headId) : null
+    const chain = node?.comment || head?.name || (head ? baseName(head) : '') || ''
+    await appendRow(root, { t: 'skip', at: Date.now(), mode: 'chain', by: 'timer', from: timerId, chain, why, note }).catch(() => {})
+  }
+
   // 到点了：让运行器从定时器出发走一整条链。链身被占时它会把这一下拦下来，
   // 这儿把那个「让不开」记成跳过 —— 不是「没跑起来」（ADR-0027）。
   async function fire(timerId) {
-    // 进化正在改工作文件夹：不写回，只在内存里记一笔
-    if (isPaused()) return record(timerId, 'skipped', '上次跳过了（正在进化）')
+    // 进化正在改工作文件夹：不写回，只在内存里记一笔，日志上留一行「正在进化」（ADR-0031）
+    if (isPaused()) {
+      record(timerId, 'skipped', '上次跳过了（正在进化）')
+      await logSkip(timerId, 'evolving', '正在进化，这一下没点火')
+      return
+    }
     const at = Date.now()
     try {
       await runChain(timerId)
@@ -33,6 +51,7 @@ export function createScheduler({ getRoot, runChain, isPaused = () => false }) {
     } catch (error) {
       if (error?.code === 'busy') {
         record(timerId, 'skipped', error.message)
+        await logSkip(timerId, 'busy', error.message)
         await writeBack(timerId, { at, skipped: true, note: `上次跳过了（${error.message}）` })
         return
       }

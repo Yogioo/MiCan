@@ -6,7 +6,8 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { routeFrom } from '../src/core/chain.mjs'
 import { baseName, dataInto, dataOut, execIn, execOutAll, extensionOf, findNode, reachable, runnable, trigger as isTrigger } from '../src/core/graph.mjs'
-import { CANVAS_FILE, CACHE_DIR, RUNS_DIR, RUNS_FILE, cacheFile, logFile, portFile, runLogName } from '../src/core/paths.mjs'
+import { CANVAS_FILE, CACHE_DIR, cacheFile, logFile, portFile } from '../src/core/paths.mjs'
+import { clipText, firstLine } from '../src/core/run-log.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { resultMeta } from '../src/core/serialize.mjs'
 import { forgetResults, loadArchive, patchResults } from './archive.mjs'
@@ -15,6 +16,7 @@ import { applyVars, collectVars } from '../src/core/vars.mjs'
 import { startCommand } from './exec.mjs'
 import { liveBoard, writeSlot } from './board-slots.mjs'
 import { commandOf } from './extensions.mjs'
+import { appendRow, writeAttachments } from './run-log.mjs'
 
 // 跑完的记录留一会儿再扔：事件流断过的页面重连时还补得上最后那句话。
 const KEEP_DONE_MS = 2 * 60 * 1000
@@ -37,11 +39,18 @@ function locateTypedFile(file, workspace, cwd) {
   return ''
 }
 
-// onRecord：往 runs.jsonl 追加了一行；onIdle：最后一条在跑的也收了尾。自动进化靠这两处看条件（ADR-0024）。
+// onRecord：往运行日志追加了一行；onIdle：最后一条在跑的也收了尾。自动进化靠这两处看条件（ADR-0024）。
 export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () => '', onRecord = async () => {}, onIdle = () => {} }) {
   const runs = new Map()
   let seq = 0
   const nextId = () => `r${Date.now().toString(36)}${(seq += 1).toString(36)}`
+
+  // 一次运行的日志行按先后串成一条链：run / step / end 的次序不能乱（面板靠这个折叠）。
+  // 写日志出错只吞掉，不带崩这一次运行（ADR-0031 沿用 ADR-0020 的旧约定）。
+  const logRow = (run, row) => {
+    run.logTail = run.logTail.then(() => appendRow(run.root, row)).catch(() => {})
+    return run.logTail
+  }
 
   // 运行器此刻占着哪些东西：从这一步开始，这些节点的缓存文件和 md 都由它写。
   // 前端的整包落盘（server/api.mjs 的 save）照这份名单跳过它们，免得把刚写下的盖回旧的（ADR-0009）。
@@ -84,6 +93,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     run.active = false
     run.current = null
     run.finishedAt = Date.now()
+    // 整条链的结论落盘：没有 end 行的 run 就是「还在跑」（ADR-0031）
+    logRow(run, { t: 'end', runId: run.id, at: run.finishedAt, outcome, steps: run.step, ms: run.finishedAt - run.startedAt, message })
     emit(run, { t: 'end', outcome, message, steps: run.step })
     run.subscribers.clear()
     setTimeout(() => runs.delete(run.id), KEEP_DONE_MS).unref()
@@ -193,7 +204,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       if (source.error) return { error: source.error }
       const { value, error } = pickValue(source.text, node.pick ?? '', { multiline: true })
       if (error) return { error: `提取不出值：${error}` }
-      return { ...(await settle(run, node, { output: value, at: Date.now(), elapsed: Date.now() - startedAt }, outEdges)), targets: targets.length }
+      const input = { pick: node.pick ?? '', source: source.text ?? '' }
+      return { ...(await settle(run, node, { output: value, at: Date.now(), elapsed: Date.now() - startedAt }, outEdges)), targets: targets.length, input }
     }
 
     if (node.kind === 'set') {
@@ -204,7 +216,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       const output = source.text ?? ''
       await writeSlot(run.root, name, output)
       run.board[name] = output
-      return { ...(await settle(run, node, { output, at: Date.now(), elapsed: Date.now() - startedAt }, outEdges)), targets: targets.length }
+      const input = { slot: name, source: output }
+      return { ...(await settle(run, node, { output, at: Date.now(), elapsed: Date.now() - startedAt }, outEdges)), targets: targets.length, input }
     }
 
     // 命令从哪来：手写的在节点上；引用扩展的现读那份清单拼一条 —— 节点存的是引用，
@@ -264,7 +277,13 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       at: Date.now(),
       elapsed: Date.now() - startedAt, // 跑完也留着，脚上照样看得到跑了多久
     }
-    return { ...(await settle(run, node, result, outEdges, outputs)), targets: targets.length, route, outputs }
+    // 这一步实际拿到的输入 + 替换后的命令（ADR-0031 的 .in.json）：名字的来源指明是入边、常量、面板还是默认值。
+    const input = {
+      cwd,
+      command: injected.command,
+      vars: Object.fromEntries([...vars].map(([name, value]) => [name, { value: value.text, file: value.file, origin: value.origin ?? '' }])),
+    }
+    return { ...(await settle(run, node, result, outEdges, outputs)), targets: targets.length, route, outputs, input }
   }
 
   // 结果三处落地：裸输出进缓存文件、正文进下游文本节点的 md、元信息补进 results，
@@ -285,6 +304,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       }
     }
     const texts = []
+    const wrote = []
     const portErrors = []
     if (!result.failed) {
       const pending = []
@@ -316,41 +336,51 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
         await fs.writeFile(file, text, 'utf8')
         item.text = text
         texts.push({ nodeId: item.id, text })
+        wrote.push({ node: item.id, file: item.file })
       }
     }
     await patchResults(run.root, { [node.id]: resultMeta(node) })
     emit(run, { t: 'done', nodeId: node.id, result, texts })
-    if (portErrors.length) return { result, error: portErrors.join('；') }
-    return { result }
+    if (portErrors.length) return { result, texts, wrote, error: portErrors.join('；') }
+    return { result, texts, wrote }
   }
 
   // ---- 历史 ----
 
-  // 一行一次运行，追加进 runs.jsonl。值不进来（缓存文件里有）；.log 按次另存一份，这一行记上文件名。
-  // 另存的 .log 每个节点只留最近 runLogKeep 份（机器设置）。
-  async function remember(run, id, result, route) {
+  // 一步跑完：三份附件落盘（值、诊断、输入快照），jsonl 上留一行引用 + 给列表看的摘要。
+  // 值一律进附件，不设「多大才另存」的门槛（ADR-0031）。
+  async function remember(run, id, result, going, extra = {}) {
     const at = result.at ?? Date.now()
-    const entry = { at, node: id, chain: run.nodeId, by: run.trigger }
-    if (route !== undefined) entry.route = route
-    Object.assign(entry, { code: result.code ?? 0, failed: Boolean(result.failed), ms: result.elapsed ?? 0 })
-    // .log 存不下来，这一行照记，只是不带 log
-    if (result.log) entry.log = await keepLog(run.root, at, id, result.log).catch(() => undefined)
-    await fs.appendFile(path.join(run.root, RUNS_FILE), `${JSON.stringify(entry)}\n`, 'utf8')
+    const ref = await writeAttachments(run.root, at, id, {
+      out: result.output ?? '',
+      log: result.log ?? '',
+      input: extra.input,
+    }).catch(() => ({}))
+    const node = findNode(run.graph, id)
+    const entry = {
+      t: 'step',
+      runId: run.id,
+      at,
+      node: id,
+      name: node?.name ?? '',
+      step: run.step,
+      ms: result.elapsed ?? 0,
+      code: result.code ?? 0,
+      failed: Boolean(result.failed),
+    }
+    // 走的那根执行边、以及选路用的那个值：只为列表里不用点开就认得出（全文在附件里）
+    if (going?.to !== undefined) {
+      entry.route = going.label ?? ''
+      entry.routeValue = clipText(going.value)
+    }
+    const digest = clipText(firstLine(result.output), 60)
+    if (digest) entry.digest = digest
+    if (extra.wrote?.length) entry.wrote = extra.wrote
+    if (ref.out) entry.out = ref.out
+    if (ref.log) entry.log = ref.log
+    if (ref.in) entry.in = ref.in
+    await logRow(run, entry)
     await onRecord(entry)
-  }
-
-  async function keepLog(root, at, id, log) {
-    const dir = path.join(root, RUNS_DIR)
-    await fs.mkdir(dir, { recursive: true })
-    const name = runLogName(at, id)
-    await fs.writeFile(path.join(dir, name), log, 'utf8')
-    const { runLogKeep } = await readSettings()
-    const mine = (await fs.readdir(dir))
-      .map((file) => ({ file, match: /^(\d+)-(.+)\.log$/.exec(file) }))
-      .filter((item) => item.match?.[2] === id)
-      .sort((a, b) => Number(b.match[1]) - Number(a.match[1]))
-    for (const item of mine.slice(runLogKeep)) await fs.rm(path.join(dir, item.file), { force: true }).catch(() => {})
-    return name
   }
 
   // ---- 走路 ----
@@ -382,7 +412,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       // 没跑起来（验不过）不进历史；跑了、哪怕出口没取到，都算一次
       if (!result) return finish(run, 'error', stepMessage(run, step, outcome.error))
       const going = run.mode === 'chain' && !outcome.error && !result.stopped && !run.stopped && !result.failed ? nextOf(run, cursor, outcome) : null
-      await remember(run, cursor, result, going?.label).catch(() => {})
+      await remember(run, cursor, result, going, { input: outcome.input, wrote: outcome.wrote }).catch(() => {})
       if (outcome.error) return finish(run, 'error', stepMessage(run, step, outcome.error))
       // 停止有两处：当前这条命令被掐掉（结果里标了 stopped），或停在了两步之间的空档
       if (result.stopped || run.stopped) return finish(run, 'stopped', stopMessage(run, step))
@@ -406,8 +436,8 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
 
   // 从入口/定时器跑链之前，把链身里会跑的节点的上一次结果先清掉：这一趟没走到的分支不该还挂着
   // 上一趟的输出。缓存文件、诊断、出口边车一并删，results.json 里那几格也忘掉。
-  // 运行历史（runs.jsonl、runs/）与下游文本节点的正文都不动 —— 前者是记录，后者是用户的东西。
-  // 名字都按节点 id 开头认（<id>.out / <id>.log / <id>.<出口>.out），runs.jsonl 这类名字沾不上。
+  // 运行日志（.mican/log、.mican/runs）与下游文本节点的正文都不动 —— 前者是记录，后者是用户的东西。
+  // 名字都按节点 id 开头认（<id>.out / <id>.log / <id>.<出口>.out），log/ 与 runs/ 那两个子目录沾不上。
   async function clearResults(root, ids) {
     const dir = path.join(root, CACHE_DIR)
     for (const name of await fs.readdir(dir).catch(() => [])) {
@@ -463,6 +493,7 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
       events: [],
       subscribers: new Set(),
       current: null,
+      logTail: Promise.resolve(), // run / step / end 三行按先后串成一条链
     }
     runs.set(run.id, run)
     // 跑链前先把链身里的旧结果清掉（ADR-0029）：默认开着，可在画布设置里关。
@@ -471,6 +502,9 @@ export function createRunner({ getRoot, resolveCwd, readSettings, blocked = () =
     if (cleared.length) await clearResults(root, new Set(cleared))
     emit(run, { t: 'run', runId: run.id, mode, nodeId: id, headId: head, startedAt: run.startedAt, trigger: run.trigger })
     if (cleared.length) emit(run, { t: 'clear', ids: cleared })
+    // 开跑那一刻就写：实时盯它要在 end 之前就能看见（ADR-0031）。
+    // by 是 manual / timer，mode 是 chain / node，from 是点火的那枚触发节点，chain 是链名。
+    logRow(run, { t: 'run', runId: run.id, at: run.startedAt, mode, by: run.trigger, from: id, chain: run.chainName, head, cleared })
     // 不等它跑完：调用方拿 runId 就去订阅事件了
     walk(run).catch((error) => finish(run, 'error', `跑链出错了：${error.message}`))
     return { runId: run.id }

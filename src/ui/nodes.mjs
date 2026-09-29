@@ -37,7 +37,7 @@ export function isActLine(row) {
 // 脚上的时刻：默认只到分；秒级定时器要看到秒，不然一秒响一次也像什么都没发生
 const clockOf = (ts, withSeconds = false) => new Date(ts).toTimeString().slice(0, withSeconds ? 8 : 5)
 
-export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onNewTextNode, onNewCommandNode, onNewExtractNode, onNewEntryNode, onNewTimerNode, onNewExtensionNode, onSetRunDir }) {
+export function mountNodes({ getState, update, onConnectStart, onRunCommand, onRunChain, onNewTextNode, onNewCommandNode, onNewExtractNode, onNewEntryNode, onNewTimerNode, onNewExtensionNode, onSetRunDir, onOpenLog }) {
   const layer = document.getElementById('nodes')
   const viewport = document.getElementById('viewport')
   const elements = new Map()
@@ -889,6 +889,18 @@ export function mountNodes({ getState, update, onConnectStart, onRunCommand, onR
     const id = el.dataset.id
     const node = getState().graph.nodes.find((item) => item.id === id)
     if (!node) return
+
+    // 触发节点脚上那一格（ADR-0031）：点开带这条链过滤的运行日志。不能在 .node-foot 上挂 click ——
+    // 节点按下时抓走了指针，click 会被重定向到整个节点上；所以在按下这一处记着，松手且没拖动才算点它一下。
+    const onFoot = Boolean(event.target.closest('.node-foot')) && (node.kind === 'entry' || node.kind === 'timer')
+    if (onFoot) {
+      const start = { x: event.clientX, y: event.clientY }
+      const finish = (upEvent) => {
+        el.removeEventListener('pointerup', finish)
+        if (Math.hypot(upEvent.clientX - start.x, upEvent.clientY - start.y) < machine.dragThreshold) onOpenLog?.(id)
+      }
+      el.addEventListener('pointerup', finish)
+    }
 
     // 连接点：交给边层去拉一条线，拉哪一种由端口决定。
     // 命名输入端口还要把名字带过去 —— 建出来的边标签就是它，而且从端口往别处拉时方向是反的。

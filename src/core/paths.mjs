@@ -19,10 +19,16 @@ export const portFile = (id, port) => `${CACHE_DIR}/${id}.${String(port).replace
 // 面板属性的值：一份对一个名字。是用户的数据，不在缓存目录里（缓存目录可以整个忽略）。
 export const BOARD_DIR = 'board'
 export const boardFile = (name) => `${BOARD_DIR}/${String(name).replace(/[\\/]/g, '_')}.md`
-// 运行历史：一行一次运行，只追加。每次的 .log 另存进 runs/，按节点只留最近几份。
-export const RUNS_FILE = `${CACHE_DIR}/runs.jsonl`
+// 运行事件日志（ADR-0031）：一行一件事，按天一份；这一趟的值另存成附件，行里只有引用。
+//   日志行：.mican/log/<YYYY-MM-DD>.jsonl
+//   附件：  .mican/runs/<YYYY-MM-DD>/<at>-<节点id>{.out,.log,.in.json}
+// 过期清理按天整份删（logKeepDays），所以日期就是唯一的规模单位。
+export const LOG_DIR = `${CACHE_DIR}/log`
 export const RUNS_DIR = `${CACHE_DIR}/runs`
-export const runLogName = (at, id) => `${at}-${id}${LOG_EXT}`
+export const logFileOf = (date) => `${LOG_DIR}/${date}.jsonl`
+export const runDir = (date) => `${RUNS_DIR}/${date}`
+export const runFileName = (at, id, ext) => `${at}-${id}${ext}`
+export const runFileOf = (date, at, id, ext) => `${runDir(date)}/${runFileName(at, id, ext)}`
 // 进化的配置和记录：跟工作文件夹走，不在缓存目录里。每次的提示词和过程是运行产物，留在缓存目录。
 export const EVOLVE_DIR = 'evolve'
 export const EVOLVE_CONFIG_FILE = `${EVOLVE_DIR}/config.json`

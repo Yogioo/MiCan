@@ -12,8 +12,10 @@ export function mountToolbar({ getState, actions }) {
   const start = document.getElementById('btn-start')
   const stop = document.getElementById('btn-stop')
   const evolve = document.getElementById('btn-evolve')
+  const log = document.getElementById('btn-log')
 
   evolve.addEventListener('click', actions.evolve)
+  log.addEventListener('click', actions.log)
   document.getElementById('btn-new').addEventListener('click', actions.newWorkspace)
   document.getElementById('btn-open').addEventListener('click', actions.openWorkspace)
   document.getElementById('btn-save-as').addEventListener('click', actions.saveAs)
@@ -34,6 +36,7 @@ export function mountToolbar({ getState, actions }) {
     start.disabled = Boolean(evolving)
     evolve.disabled = !state.workspace
     evolve.textContent = evolving ? `进化中：${state.evolve.phase || '…'}` : '进化'
+    log.disabled = !state.workspace
     document.body.classList.toggle('evolving', Boolean(evolving))
     dot.classList.toggle('saving', state.saving)
     dot.title = state.saving ? '正在落盘…' : '改动即落盘'

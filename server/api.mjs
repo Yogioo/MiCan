@@ -3,7 +3,9 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { CACHE_DIR, CACHE_EXT, CANVAS_FILE, DOCS_DIR, LAYOUT_FILE, LOG_EXT, cacheFile, logFile } from '../src/core/paths.mjs'
+import { dayOf } from '../src/core/run-log.mjs'
 import { keepResults, moveOutOfCache, readArchive } from './archive.mjs'
+import { cleanOldLogs, listDays, readDay } from './run-log.mjs'
 import { shellNames } from './exec.mjs'
 import { importExtension, listLibrary, scanExtensions } from './extensions.mjs'
 import { deleteSlot, readSlots, renameSlot, writeSlot } from './board-slots.mjs'
@@ -21,9 +23,9 @@ const MAX_TIMEOUT_S = 24 * 3600
 // 一个节点的输出上限：默认 1MB。超了就截断（不杀进程）—— 杀掉等于把 agent 的活白干了。
 const DEFAULT_OUTPUT_KB = 1024
 const MAX_OUTPUT_KB = 65536
-// 每个节点另存的 .log 留几次：agent 的一份可能几百 KB，别无限攒。
-const DEFAULT_RUN_LOG_KEEP = 20
-const MAX_RUN_LOG_KEEP = 1000
+// 运行日志（.mican/log + .mican/runs）按天留几天：这是唯一的规模控制（ADR-0031）。
+const DEFAULT_LOG_KEEP_DAYS = 7
+const MAX_LOG_KEEP_DAYS = 365
 const DEFAULT_RECENT_MAX = 8
 const MAX_RECENT_MAX = 50
 const MAX_BODY = 32 * 1024 * 1024
@@ -64,6 +66,17 @@ export function createApi(initialRoot) {
   // 这两件都是异步的，所以接口先等它们做完，别让第一圈轮询看见一个还没装好的后端。
   const booted = root ? Promise.all([scheduler.sync(), evolver.sync()]).catch(() => {}) : Promise.resolve()
 
+  // 过期日志清理（ADR-0031）：后端启动时扫一遍，之后每天一次。换工作文件夹时也顺手扫一遍 ——
+  // 启动时可能还没打开工作文件夹，光靠那一次等于没做。
+  const LOG_CLEAN_MS = 24 * 3600 * 1000
+  async function cleanLogs() {
+    if (!root) return
+    const { logKeepDays } = await readSettings()
+    await cleanOldLogs(root, logKeepDays).catch(() => {})
+  }
+  void cleanLogs()
+  setInterval(cleanLogs, LOG_CLEAN_MS).unref()
+
   function inside(relative) {
     const target = path.resolve(root, relative)
     if (target !== root && !target.startsWith(root + path.sep)) throw new Error(`路径越界：${relative}`)
@@ -97,6 +110,7 @@ export function createApi(initialRoot) {
       root = target
       await scheduler.sync() // 新文件夹里没有画布，等于把上一份的时刻表全撤掉
       await evolver.sync()
+      void cleanLogs()
       return { root, archive: null, cache: {}, logs: {}, slots: {}, recent: await remember(target) }
     }
     const stat = await fs.stat(target).catch(() => null)
@@ -107,6 +121,7 @@ export function createApi(initialRoot) {
     const archive = await readArchive(target).catch(() => null)
     await scheduler.sync() // 换了一份画布，时刻表跟着换
     await evolver.sync() // 自动进化的配置跟工作文件夹走
+    void cleanLogs()
     return { root, archive, ...(await readCache()), slots: await readSlots(target), recent: await remember(target) }
   }
 
@@ -235,12 +250,12 @@ export function createApi(initialRoot) {
         shell: typeof data.shell === 'string' ? data.shell : '',
         timeout: clampInt(data.timeout, DEFAULT_TIMEOUT_S, 1, MAX_TIMEOUT_S),
         outputLimitKb: clampInt(data.outputLimitKb, DEFAULT_OUTPUT_KB, 1, MAX_OUTPUT_KB),
-        runLogKeep: clampInt(data.runLogKeep, DEFAULT_RUN_LOG_KEEP, 1, MAX_RUN_LOG_KEEP),
+        logKeepDays: clampInt(data.logKeepDays, DEFAULT_LOG_KEEP_DAYS, 1, MAX_LOG_KEEP_DAYS),
         recentMax: clampInt(data.recentMax, DEFAULT_RECENT_MAX, 1, MAX_RECENT_MAX),
       }
     } catch {
       // 没设过、或存坏了，都当没设
-      return { shell: '', timeout: DEFAULT_TIMEOUT_S, outputLimitKb: DEFAULT_OUTPUT_KB, runLogKeep: DEFAULT_RUN_LOG_KEEP, recentMax: DEFAULT_RECENT_MAX }
+      return { shell: '', timeout: DEFAULT_TIMEOUT_S, outputLimitKb: DEFAULT_OUTPUT_KB, logKeepDays: DEFAULT_LOG_KEEP_DAYS, recentMax: DEFAULT_RECENT_MAX }
     }
   }
 
@@ -271,10 +286,10 @@ export function createApi(initialRoot) {
     return Math.min(kb, MAX_OUTPUT_KB)
   }
 
-  function checkRunLogKeep(value) {
+  function checkLogKeepDays(value) {
     const count = Math.round(Number(value))
-    if (!Number.isFinite(count) || count < 1) throw new Error(`每个节点留几次诊断得是大于 0 的整数：${value}`)
-    return Math.min(count, MAX_RUN_LOG_KEEP)
+    if (!Number.isFinite(count) || count < 1) throw new Error(`运行日志留几天得是大于 0 的整数：${value}`)
+    return Math.min(count, MAX_LOG_KEEP_DAYS)
   }
 
   function checkRecentMax(value) {
@@ -334,7 +349,7 @@ export function createApi(initialRoot) {
         if (typeof body.shell === 'string') patch.shell = checkShell(body.shell)
         if (body.timeout !== undefined) patch.timeout = checkTimeout(body.timeout)
         if (body.outputLimitKb !== undefined) patch.outputLimitKb = checkOutputLimit(body.outputLimitKb)
-        if (body.runLogKeep !== undefined) patch.runLogKeep = checkRunLogKeep(body.runLogKeep)
+        if (body.logKeepDays !== undefined) patch.logKeepDays = checkLogKeepDays(body.logKeepDays)
         if (body.recentMax !== undefined) patch.recentMax = checkRecentMax(body.recentMax)
         if (typeof body.openWorkspace === 'string') patch.openWorkspace = requireAbsolute(body.openWorkspace, '启动时打开的工作文件夹')
         // 界面上那堆手感值（节点尺寸、缩放范围…）后端不认识，原样存着走 —— 免得前端加一项配置就得改后端。
@@ -392,6 +407,28 @@ export function createApi(initialRoot) {
         throw new Error('不认识的面板动作')
       }
       if (route === '/api/runs') return send(res, 200, { items: runner.list(), triggers: scheduler.triggers(), evolve: evolver.status() })
+      // 运行事件日志（ADR-0031）：某一天的整份（或 after= 之后的增量）。面板读它画时间流。
+      if (route === '/api/log') {
+        if (!root) throw new Error('还没有工作文件夹')
+        const date = /^\d{4}-\d{2}-\d{2}$/.test(body.date ?? '') ? body.date : dayOf(Date.now())
+        const days = await listDays(root)
+        const rows = await readDay(root, date)
+        const after = Math.max(0, Math.trunc(Number(body.after) || 0))
+        // 秒级任务下一天可能很多行：首次读只给最后一段，增量读（after）不受限
+        const MAX_ROWS = 20000
+        const start = after > 0 ? Math.min(after, rows.length) : Math.max(0, rows.length - MAX_ROWS)
+        const items = rows.slice(start).map((row, index) => ({ ...row, seq: start + index + 1 }))
+        return send(res, 200, { day: date, days, rows: items, next: rows.length })
+      }
+      // 一步的附件全文：面板上点开一层才读。只认工作文件夹里那两份日志目录。
+      if (route === '/api/log/text') {
+        if (!root) throw new Error('还没有工作文件夹')
+        const rel = String(body.path ?? '')
+        if (!/^\.mican[\\/](?:log|runs)[\\/]/.test(rel)) throw new Error('只能读日志目录里的附件')
+        const text = await fs.readFile(inside(rel), 'utf8').catch(() => null)
+        if (text === null) throw new Error('这份全文已经清理掉了')
+        return send(res, 200, { text })
+      }
       // 开一条商量（ADR-0028）：手动走商量，自动触发在那之前的 start 里已经分掉
       if (route === '/api/evolve') return send(res, 200, await evolver.start({ hint: body.hint }))
       // 商量里的下一轮、应用（校验 + commit）、放弃（还原），以及面板要的那份对话

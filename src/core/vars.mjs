@@ -45,9 +45,11 @@ export function collectVars(graph, id, workspace, defaults = {}, board = {}, sou
   const errors = []
   // 节点上填的常量先放进来：同一个名字既有常量又接了边时，边说了算（界面上那个框也会让位）。
   // typed：这段字是人填的，不是来路那份文件。`[[名字]]` 必须能在盘上找到它。
+  // origin：这个名字打哪儿来（节点上填的 / 哪条入边的来路 / 面板 / 扩展清单的默认值）——
+  // 写进这一步的 .in.json，让「这条链这一步吃了什么」有据可查（ADR-0031）。
   for (const [name, value] of Object.entries(findNode(graph, id)?.consts ?? {})) {
     const text = String(value ?? '').trim()
-    if (text) vars.set(name, { text, file: text, typed: true })
+    if (text) vars.set(name, { text, file: text, typed: true, origin: 'const' })
   }
   const fromEdges = new Set()
   for (const edge of dataInto(graph, id)) {
@@ -80,23 +82,23 @@ export function collectVars(graph, id, workspace, defaults = {}, board = {}, sou
     const text = String(value.text ?? '').trim()
     if (!text) {
       const fallback = String(board[edge.label] ?? defaults[edge.label] ?? '').trim()
-      vars.set(edge.label, { text: fallback, file: value.file || fallback })
+      vars.set(edge.label, { text: fallback, file: value.file || fallback, origin: board[edge.label] !== undefined ? 'board' : 'default' })
       continue
     }
-    vars.set(edge.label, value)
+    vars.set(edge.label, { ...value, origin: source.id })
   }
   // 兜底：常量与连线都看过了，才知道哪个名字真没人管。更具体的先：面板再扩展默认值。
   // 连了边却没跑过（errors 里那条）不在这儿顶 —— 边是更明确的来源，缺值就该报出来。
   for (const [name, raw] of Object.entries(board)) {
     const text = String(raw ?? '').trim()
     if (!text || vars.has(name) || fromEdges.has(name)) continue
-    vars.set(name, { text, file: fileOf(workspace, boardFile(name)) })
+    vars.set(name, { text, file: fileOf(workspace, boardFile(name)), origin: 'board' })
   }
   // 默认值是扩展作者写的，由扩展自己解读（比如 `空`），不按「人填的路径」去验。
   for (const [name, raw] of Object.entries(defaults)) {
     const text = String(raw ?? '').trim()
     if (!text || vars.has(name) || fromEdges.has(name)) continue
-    vars.set(name, { text, file: text })
+    vars.set(name, { text, file: text, origin: 'default' })
   }
   return { vars, errors }
 }

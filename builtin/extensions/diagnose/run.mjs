@@ -1,5 +1,5 @@
-// 诊断：把工作文件夹的运行历史压成一段 JSON（见 EXTENSION.md）。
-// 读 .mican/runs.jsonl、另存的 .mican/runs/*.log、evolve/history.jsonl 和 mican.json，只读不写。
+// 诊断：把工作文件夹的运行事件日志压成一段 JSON（见 EXTENSION.md）。
+// 读 .mican/log/*.jsonl、它引用的附件（.mican/runs/<日期>/）、evolve/history.jsonl 和 mican.json，只读不写。
 import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -27,11 +27,21 @@ const readLines = (text) =>
   text.split(/\r?\n/).flatMap((row) => {
     if (!row.trim()) return []
     try {
-      return [JSON.parse(row)]
+      const parsed = JSON.parse(row)
+      return parsed && typeof parsed === 'object' ? [parsed] : []
     } catch {
       return []
     }
   })
+
+// 运行事件日志按天一份（ADR-0031）：拼起来当一份时间流。文件按日期排序，早的在前。
+async function readLog(root) {
+  const dir = path.join(root, '.mican', 'log')
+  const names = (await fs.readdir(dir).catch(() => [])).filter((name) => name.endsWith('.jsonl')).sort()
+  const rows = []
+  for (const name of names) rows.push(...readLines(await fs.readFile(path.join(dir, name), 'utf8').catch(() => '')))
+  return rows
+}
 
 // 动作行（扩展约定）：整行一段带字符串 tool 的 JSON。一步记成「工具 + 第一个字符串参数」。
 function actsOf(log) {
@@ -81,20 +91,38 @@ function repeatsOf(runs) {
   return picked
 }
 
+// 每条链的结局分布（ADR-0031 多出来的那一项）：end 行的 outcome 按链名归堆。
+function chainOutcomes(runs, ends) {
+  const out = new Map()
+  for (const [runId, run] of runs) {
+    const name = run.chain || '（没写链名）'
+    if (!out.has(name)) out.set(name, { chain: name, runs: 0, ok: 0, failed: 0, stuck: 0, limit: 0, stopped: 0, error: 0 })
+    const item = out.get(name)
+    item.runs += 1
+    const outcome = ends.get(runId)?.outcome
+    if (outcome && item[outcome] !== undefined) item[outcome] += 1
+  }
+  return [...out.values()].sort((a, b) => b.runs - a.runs)
+}
+
 try {
   const root = findWorkspace()
   if (!root) throw new Error('往上找不到 mican.json：诊断扩展要放在工作文件夹的 extensions/ 底下')
   const canvas = JSON.parse(await fs.readFile(path.join(root, 'mican.json'), 'utf8'))
-  const history = readLines(await fs.readFile(path.join(root, '.mican', 'runs.jsonl'), 'utf8').catch(() => ''))
-  if (!history.length) {
-    say({ ok: false, reason: '还没有运行历史（.mican/runs.jsonl 是空的）' })
+  const rows = await readLog(root)
+  const steps = rows.filter((row) => row.t === 'step')
+  if (!steps.length) {
+    say({ ok: false, reason: '还没有运行历史（.mican/log/ 底下是空的）' })
     process.exit(0)
   }
 
+  const runs = new Map(rows.filter((row) => row.t === 'run').map((row) => [row.runId, row]))
+  const ends = new Map(rows.filter((row) => row.t === 'end').map((row) => [row.runId, row]))
+  const runMode = (runId) => runs.get(runId)?.mode ?? ''
   const nodesById = new Map((canvas.nodes ?? []).map((node) => [node.id, node]))
   const execEdges = (canvas.edges ?? []).filter((edge) => edge.kind === 'exec')
   const byNode = new Map()
-  for (const entry of history) {
+  for (const entry of steps) {
     if (!byNode.has(entry.node)) byNode.set(entry.node, [])
     byNode.get(entry.node).push(entry)
   }
@@ -113,14 +141,27 @@ try {
     let streak = 0
     for (let at = entries.length - 1; at >= 0 && entries[at].failed; at -= 1) streak += 1
     const routes = {}
-    for (const entry of entries) if (entry.route !== undefined) routes[entry.route] = (routes[entry.route] ?? 0) + 1
+    const skipped = {}
+    for (const entry of entries) {
+      if (entry.route !== undefined) routes[entry.route] = (routes[entry.route] ?? 0) + 1
+      else if (entry.routeValue !== undefined) skipped[entry.routeValue] = (skipped[entry.routeValue] ?? 0) + 1
+    }
     // 跑链时没往下走、也没失败，而它明明有执行出边：值没对上任何一根边的标签
     const hasOut = execEdges.some((edge) => edge.from === id)
-    const stuckAt = new Set(entries.filter((entry) => entry.chain !== id && !entry.failed && entry.route === undefined && hasOut))
+    const stuckAt = new Set(entries.filter((entry) => runMode(entry.runId) === 'chain' && !entry.failed && entry.route === undefined && hasOut))
+    // 连续 N 次都卡在同一根标签：账上最尾那一串「同值停住」，值一样才算同一处
+    let stuckStreak = 0
+    let lastValue = null
+    for (let at = entries.length - 1; at >= 0; at -= 1) {
+      const entry = entries[at]
+      if (!stuckAt.has(entry) || (stuckStreak && entry.routeValue !== lastValue)) break
+      lastValue = entry.routeValue
+      stuckStreak += 1
+    }
     const actsAt = new Map()
     for (const entry of entries) {
       if (!entry.log) continue
-      const log = await fs.readFile(path.join(root, '.mican', 'runs', entry.log), 'utf8').catch(() => null)
+      const log = await fs.readFile(path.join(root, entry.log), 'utf8').catch(() => null)
       if (log !== null) actsAt.set(entry, actsOf(log))
     }
     const acts = [...actsAt.values()]
@@ -134,6 +175,8 @@ try {
       avgMs: Math.round(entries.reduce((sum, entry) => sum + (entry.ms ?? 0), 0) / entries.length),
       routes,
     }
+    if (Object.keys(skipped).length) item.stuckOn = skipped
+    if (stuckStreak > 1) item.stuckStreak = stuckStreak
     const avgActs = avgActsOf(entries, actsAt)
     if (avgActs !== undefined) item.avgActs = avgActs
     if (change) {
@@ -165,15 +208,24 @@ try {
     })
     .map((edge) => ({ from: edge.from, to: edge.to, label: edge.label ?? '' }))
 
+  const chains = chainOutcomes(runs, ends)
   const day = (at) => new Date(at).toISOString().slice(0, 10)
+  const first = steps[0].at
+  const last = steps[steps.length - 1].at
   const text = [
     ...worse,
-    `共 ${history.length} 次运行（${day(history[0].at)} ~ ${day(history[history.length - 1].at)}）`,
+    `共 ${runs.size} 次运行、${steps.length} 步（${day(first)} ~ ${day(last)}）`,
     ...(change ? [`上次改动：${change.commit}（${new Date(change.at).toISOString().slice(0, 16).replace('T', ' ')}）`] : []),
+    ...chains.map((item) => {
+      const parts = [`${item.runs} 次`, `跑完 ${item.ok}`]
+      for (const key of ['failed', 'stuck', 'limit', 'stopped', 'error']) if (item[key]) parts.push(`${key} ${item[key]}`)
+      return `链「${item.chain}」：${parts.join('，')}`
+    }),
     ...nodes.map((item) => {
       const parts = [`${item.runs} 次`, `败 ${item.failed}`]
       if (item.streak) parts.push(`眼下连败 ${item.streak}`)
       if (item.stuck) parts.push(`停住 ${item.stuck}`)
+      if (item.stuckStreak) parts.push(`连续 ${item.stuckStreak} 次卡在「${item.stuckOn ? Object.keys(item.stuckOn)[0] : '同一个值'}」`)
       parts.push(`平均 ${seconds(item.avgMs)}`)
       if (item.avgActs !== undefined) parts.push(`平均 ${item.avgActs} 步动作`)
       const routes = Object.entries(item.routes).map(([label, count]) => `${label || '兜底'}×${count}`)
@@ -184,9 +236,9 @@ try {
     ...repeats.map((item) => `${item.node} 在 ${item.runs}/${item.of} 次里都做了：${item.calls.join(' → ')}`),
   ].join('\n')
 
-  const result = { ok: true, runs: history.length }
+  const result = { ok: true, runs: runs.size }
   if (change) result.change = { at: change.at, commit: change.commit, by: change.by }
-  say({ ...result, nodes, unusedEdges, repeats, text })
+  say({ ...result, nodes, chains, unusedEdges, repeats, text })
 } catch (error) {
   process.stderr.write(`✗ ${error.message}\n`)
   say({ ok: false, reason: error.message })

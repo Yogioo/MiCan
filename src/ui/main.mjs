@@ -3,6 +3,7 @@ import {
   baseName,
   createGraph,
   createNode,
+  execOutAll,
   findEdge,
   findNode,
   fitInputPorts,
@@ -26,6 +27,7 @@ import { mountCanvas } from './canvas.mjs'
 import { mountEdges } from './edges.mjs'
 import { mountEvolveWindow } from './evolve-window.mjs'
 import { mountNodes } from './nodes.mjs'
+import { mountRunLogWindow } from './run-log-window.mjs'
 import { askSettings } from './settings-dialog.mjs'
 import { mountToolbar } from './toolbar.mjs'
 import { askRunDir, askUndoReason, askWorkspace, confirmDiscard, confirmRestore } from './workspace-dialog.mjs'
@@ -574,6 +576,53 @@ async function pollRuns() {
   }
   // 页面是进化中途打开的：接上进化窗口
   if (answer.evolve?.active) watchEvolve(answer.evolve)
+  await pollLog()
+}
+
+// ---- 运行日志（ADR-0031）----
+
+// 面板打开着才轮询增量；关着的时候不白读盘。1 秒 / 3 秒的节奏跟 pollRuns 共用。
+let logNext = 0
+async function loadLog(date = '') {
+  if (!state.workspace) return
+  try {
+    const answer = await api('/api/log', { date: date || runLogWindow.day(), after: 0 })
+    logNext = answer.next ?? 0
+    runLogWindow.load(answer)
+  } catch (error) {
+    showMessage(`运行日志读不出来：${error.message}`)
+  }
+}
+
+async function pollLog() {
+  if (!state.workspace || !runLogWindow.isOpen()) return
+  try {
+    const answer = await api('/api/log', { date: runLogWindow.day(), after: logNext })
+    logNext = answer.next ?? logNext
+    runLogWindow.append(answer)
+  } catch {
+    // 读不到就下一圈再说
+  }
+}
+
+// 点一行日志：画布移过去并选中那个节点（复用选中和视图那两套现成的）
+function focusNode(id) {
+  const node = findNode(state.graph, id)
+  if (!node) return showMessage('这个节点已经不在画布上了')
+  const viewport = document.getElementById('viewport')
+  update((draft) => {
+    draft.selection = new Set([id])
+    draft.view = { ...draft.view, x: viewport.clientWidth / 2 - (node.x + node.w / 2) * draft.view.scale, y: viewport.clientHeight / 2 - (node.y + node.h / 2) * draft.view.scale }
+  })
+}
+
+// 触发节点脚上点开：带这条链过滤的同一个面板（链名口径跟后端一致：注释优先，其次起步节点的 name）
+function openLogFor(id) {
+  if (!state.workspace) return showMessage('先打开一个工作文件夹')
+  const node = findNode(state.graph, id)
+  const head = findNode(state.graph, execOutAll(state.graph, id)[0]?.to)
+  const chain = node?.comment || head?.name || (head ? baseName(head) : '') || ''
+  runLogWindow.open(chain ? { chain } : {})
 }
 
 // ---- 进化 ----
@@ -1064,8 +1113,16 @@ const nodes = mountNodes({
   // 扩展节点就是一个命令节点，只是命令从扩展那份清单里拼（ADR-0014）
   onNewExtensionNode: (world, extension) => createNodeAt(world, 'command', { extension }),
   onSetRunDir: setRunDir,
+  onOpenLog: openLogFor,
 })
-const toolbar = mountToolbar({ getState: () => state, actions: { newWorkspace, saveAs, openWorkspace, resetZoom, openSettings, evolve: () => evolveWindow.toggle(), start: startFromEntries, stop: stopRunning } })
+const runLogWindow = mountRunLogWindow({
+  actions: {
+    focusNode,
+    readText: async (rel) => (await api('/api/log/text', { path: rel })).text ?? '',
+    reload: loadLog,
+  },
+})
+const toolbar = mountToolbar({ getState: () => state, actions: { newWorkspace, saveAs, openWorkspace, resetZoom, openSettings, evolve: () => evolveWindow.toggle(), log: () => runLogWindow.toggle({ reset: true }), start: startFromEntries, stop: stopRunning } })
 const evolveWindow = mountEvolveWindow({
   getState: () => state,
   actions: { evolve: startEvolve, say: sayEvolve, apply: applyEvolve, discard: discardEvolve, undo: undoEvolve, restore: restoreEvolve },

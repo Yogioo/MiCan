@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { dataInto, findNode } from '../src/core/graph.mjs'
-import { CACHE_DIR, CANVAS_FILE, DOCS_DIR, EVOLVE_CONFIG_FILE as CONFIG_FILE, EVOLVE_DIR, EVOLVE_HISTORY_FILE as HISTORY_FILE, EVOLVE_LOG_DIR, EVOLVE_PENDING_FILE as PENDING_FILE, LAYOUT_FILE, RUNS_FILE } from '../src/core/paths.mjs'
+import { CACHE_DIR, CANVAS_FILE, DOCS_DIR, EVOLVE_CONFIG_FILE as CONFIG_FILE, EVOLVE_DIR, EVOLVE_HISTORY_FILE as HISTORY_FILE, EVOLVE_LOG_DIR, EVOLVE_PENDING_FILE as PENDING_FILE, LAYOUT_FILE, LOG_DIR } from '../src/core/paths.mjs'
 import { pickValue } from '../src/core/pick.mjs'
 import { nextFireAt, parseSchedule } from '../src/core/schedule.mjs'
 import { FORMAT_VERSION, deserialize } from '../src/core/serialize.mjs'
@@ -211,19 +211,32 @@ async function readHistory(root) {
   return readLines(await fs.readFile(path.join(root, HISTORY_FILE), 'utf8').catch(() => ''))
 }
 
-// 上次进化之后（以最近一条记录的时刻为界，不管成没成）攒下的运行，看够不够触发
+// 运行事件日志按天一份（ADR-0031）：把 .mican/log/ 底下那几份拼起来当一份时间流读。
+async function logRows(root) {
+  const dir = path.join(root, LOG_DIR)
+  const names = (await fs.readdir(dir).catch(() => [])).filter((name) => name.endsWith('.jsonl')).sort()
+  const rows = []
+  for (const name of names) rows.push(...readLines(await fs.readFile(path.join(dir, name), 'utf8').catch(() => '')))
+  return rows
+}
+
+// 上次进化之后（以最近一条记录的时刻为界，不管成没成）攒下的运行，看够不够触发。
+// runs 条件数的是「多少次运行」（run 行），streak 仍按 step 行的 failed 连败算（ADR-0031）。
 async function triggerOf(root, config, node) {
   const since = (await readHistory(root)).at(-1)?.at ?? 0
-  const rows = readLines(await fs.readFile(path.join(root, RUNS_FILE), 'utf8').catch(() => '')).filter((row) => row.at > since)
+  const rows = (await logRows(root)).filter((row) => (row.at ?? 0) > since)
   if (config.streak && node) {
     let streak = 0
-    for (const row of rows.filter((item) => item.node === node).reverse()) {
+    for (const row of rows.filter((item) => item.t === 'step' && item.node === node).reverse()) {
       if (!row.failed) break
       streak += 1
     }
     if (streak >= config.streak) return 'streak'
   }
-  if (config.runs && rows.length >= config.runs) return 'runs'
+  if (config.runs) {
+    const runs = new Set(rows.filter((row) => row.t === 'run').map((row) => row.runId))
+    if (runs.size >= config.runs) return 'runs'
+  }
   return ''
 }
 
@@ -901,7 +914,7 @@ export function createEvolver({ getRoot, readSettings, stopRuns, isIdle, afterwa
     await start({ by }).catch(() => {})
   }
 
-  // 运行器每往 runs.jsonl 追加一行，看一次 runs 和 streak
+  // 运行器每往运行日志追加一行，看一次 runs 和 streak
   async function recorded(entry) {
     const root = getRoot()
     if (!root || current || talk || pending) return
